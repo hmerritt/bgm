@@ -2,8 +2,14 @@ use crate::errors::Result;
 use crate::wallpaper::{ScreenSpec, WallpaperBackend};
 use anyhow::{bail, Context};
 use std::iter;
+use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
+use std::ptr;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SystemParametersInfoW, SM_CXSCREEN, SM_CYSCREEN, SPIF_SENDCHANGE,
     SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
@@ -20,6 +26,8 @@ impl WindowsWallpaperBackend {
 
 impl WallpaperBackend for WindowsWallpaperBackend {
     fn set_wallpaper(&self, path: &Path) -> Result<()> {
+        enforce_fill_style().context("failed to enforce wallpaper Fill style")?;
+
         let absolute = path
             .canonicalize()
             .with_context(|| format!("failed to canonicalize {}", path.display()))?;
@@ -55,4 +63,60 @@ impl WallpaperBackend for WindowsWallpaperBackend {
             height: height as u32,
         })
     }
+}
+
+fn enforce_fill_style() -> Result<()> {
+    let mut key: HKEY = ptr::null_mut();
+    let subkey = wide_null("Control Panel\\Desktop");
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("RegOpenKeyExW failed with status {status}");
+    }
+
+    let close_result = (|| -> Result<()> {
+        write_reg_sz(key, "WallpaperStyle", "10")?;
+        write_reg_sz(key, "TileWallpaper", "0")?;
+        Ok(())
+    })();
+
+    let close_status = unsafe { RegCloseKey(key) };
+    if close_status != ERROR_SUCCESS {
+        bail!("RegCloseKey failed with status {close_status}");
+    }
+
+    close_result
+}
+
+fn write_reg_sz(key: HKEY, value_name: &str, value: &str) -> Result<()> {
+    let value_name_w = wide_null(value_name);
+    let value_w = wide_null(value);
+    let data_len = (value_w.len() * size_of::<u16>()) as u32;
+
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            value_name_w.as_ptr(),
+            0,
+            REG_SZ,
+            value_w.as_ptr() as *const u8,
+            data_len,
+        )
+    };
+
+    if status != ERROR_SUCCESS {
+        bail!("RegSetValueExW({value_name}) failed with status {status}");
+    }
+    Ok(())
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(iter::once(0)).collect()
 }

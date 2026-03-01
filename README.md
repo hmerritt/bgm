@@ -19,6 +19,7 @@ A rust program, continually running, to manage the current OS background image.
 ## Current Implementation
 
 - Windows-first wallpaper backend (`SystemParametersInfoW`)
+- Forces Windows wallpaper style to `Fill` on apply
 - No-repeat shuffle rotation cycle
 - Local and remote image cache
 - Cover resize + center crop image processing
