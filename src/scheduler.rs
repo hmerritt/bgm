@@ -1,5 +1,5 @@
 use std::time::Duration;
-use tokio::time::{interval, Interval, MissedTickBehavior};
+use tokio::time::{interval_at, Instant, Interval, MissedTickBehavior};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SchedulerEvent {
@@ -14,10 +14,10 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(switch_every: Duration, remote_every: Duration) -> Self {
-        let mut switch_interval = interval(switch_every);
+        let mut switch_interval = interval_at(Instant::now() + switch_every, switch_every);
         switch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let mut remote_interval = interval(remote_every);
+        let mut remote_interval = interval_at(Instant::now() + remote_every, remote_every);
         remote_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         Self {
