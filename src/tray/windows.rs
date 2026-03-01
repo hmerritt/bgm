@@ -20,14 +20,15 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetWindowLongPtrW, LoadIconW,
-    PeekMessageW, RegisterClassW, SetWindowLongPtrW, TranslateMessage, GWLP_USERDATA,
-    IDI_APPLICATION, MSG, PM_REMOVE, SW_SHOWNORMAL, WM_APP, WM_LBUTTONDBLCLK, WM_NCCREATE,
-    WM_NCDESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_NOACTIVATE,
+    LoadImageW, PeekMessageW, RegisterClassW, SetWindowLongPtrW, TranslateMessage, GWLP_USERDATA,
+    HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MSG, PM_REMOVE, SW_SHOWNORMAL,
+    WM_APP, WM_LBUTTONDBLCLK, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_NOACTIVATE,
 };
 
 const TRAY_ICON_ID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\bgm-tray-single-instance";
+const TRAY_ICON_RESOURCE_ID: u16 = 101;
 
 pub struct SingleInstanceGuard {
     handle: HANDLE,
@@ -157,7 +158,7 @@ fn run_tray_loop(
         return Ok(());
     }
 
-    let mut nid = create_notify_icon_data(hwnd);
+    let mut nid = create_notify_icon_data(hwnd, hinstance);
     let add_ok = unsafe { Shell_NotifyIconW(NIM_ADD, &mut nid) };
     if add_ok == 0 {
         unsafe {
@@ -260,16 +261,46 @@ unsafe fn get_window_data(hwnd: HWND) -> Option<&'static mut WindowData> {
     }
 }
 
-fn create_notify_icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
+fn create_notify_icon_data(hwnd: HWND, hinstance: HINSTANCE) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
     nid.hWnd = hwnd;
     nid.uID = TRAY_ICON_ID;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
+    nid.hIcon = load_tray_icon(hinstance);
     fill_tip(&mut nid.szTip, "bgm");
     nid
+}
+
+fn load_tray_icon(hinstance: HINSTANCE) -> HICON {
+    let custom = unsafe {
+        LoadImageW(
+            hinstance,
+            make_int_resource(TRAY_ICON_RESOURCE_ID),
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        ) as HICON
+    };
+    if !custom.is_null() {
+        tracing::info!(
+            resource_id = TRAY_ICON_RESOURCE_ID,
+            "loaded custom tray icon"
+        );
+        return custom;
+    }
+
+    tracing::warn!(
+        resource_id = TRAY_ICON_RESOURCE_ID,
+        "custom tray icon not found, falling back to default"
+    );
+    unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) }
+}
+
+fn make_int_resource(id: u16) -> *const u16 {
+    id as usize as *const u16
 }
 
 fn fill_tip(buf: &mut [u16], text: &str) {

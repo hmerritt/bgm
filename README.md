@@ -23,6 +23,7 @@ A rust program, continually running, to manage the current OS background image.
 - Windows tray icon (enabled by default)
   - Double-click tray icon: switch to next wallpaper immediately
   - Right-click tray icon: open active `bgm.hcl`
+  - Uses embedded icon resource `assets/tray.ico` (falls back to default if unavailable)
 - No-repeat shuffle rotation cycle
 - Local and remote image cache
 - Cover resize + center crop image processing
