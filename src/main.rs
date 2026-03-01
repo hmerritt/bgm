@@ -8,6 +8,7 @@ mod scheduler;
 mod sources;
 mod state;
 mod tray;
+mod version;
 mod wallpaper;
 
 use crate::cache::CacheManager;
@@ -30,12 +31,19 @@ use tracing::{info, warn};
 struct CliOptions {
     config_path: PathBuf,
     tray_enabled: bool,
+    print_version: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let options = parse_cli_options(&args)?;
+
+    print_version_banner();
+    if options.print_version {
+        return Ok(());
+    }
+
     let config_path = options.config_path.clone();
     let created = ensure_config_exists(&config_path)?;
 
@@ -163,6 +171,11 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_version_banner() {
+    let info = version::get_version();
+    println!("{}", info.full_version_number(true));
 }
 
 async fn refresh_all_sources(sources: &mut [Box<dyn ImageSource>]) -> Result<Vec<ImageCandidate>> {
@@ -303,11 +316,16 @@ fn persist_state(
 
 fn parse_cli_options(args: &[String]) -> Result<CliOptions> {
     let mut tray_enabled = true;
+    let mut print_version = false;
     let mut config_arg: Option<String> = None;
 
     for arg in args {
         if arg == "--no-tray" {
             tray_enabled = false;
+            continue;
+        }
+        if arg == "--version" {
+            print_version = true;
             continue;
         }
 
@@ -321,7 +339,12 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions> {
         config_arg = Some(arg.clone());
     }
 
-    let config_path = if let Some(config_arg) = config_arg {
+    let config_path = if print_version {
+        match config_arg {
+            Some(config_arg) => expand_tilde(&config_arg)?,
+            None => PathBuf::new(),
+        }
+    } else if let Some(config_arg) = config_arg {
         expand_tilde(&config_arg)?
     } else {
         default_user_config_path()?
@@ -330,6 +353,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions> {
     Ok(CliOptions {
         config_path,
         tray_enabled,
+        print_version,
     })
 }
 
@@ -425,12 +449,29 @@ mod tests {
     fn cli_defaults_to_tray_with_default_path() {
         let options = parse_cli_options(&[]).unwrap();
         assert!(options.tray_enabled);
+        assert!(!options.print_version);
         assert_eq!(options.config_path.file_name().unwrap(), "bgm.hcl");
     }
 
     #[test]
     fn cli_supports_no_tray_flag() {
         let options = parse_cli_options(&["--no-tray".to_string()]).unwrap();
+        assert!(!options.tray_enabled);
+        assert!(!options.print_version);
+    }
+
+    #[test]
+    fn cli_supports_version_flag() {
+        let options = parse_cli_options(&["--version".to_string()]).unwrap();
+        assert!(options.print_version);
+        assert!(options.config_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn cli_supports_version_with_no_tray() {
+        let options =
+            parse_cli_options(&["--version".to_string(), "--no-tray".to_string()]).unwrap();
+        assert!(options.print_version);
         assert!(!options.tray_enabled);
     }
 }

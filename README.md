@@ -60,6 +60,9 @@ cargo run --release -- --no-tray
 
 # Run with an explicit config path
 cargo run --release -- /path/to/bgm.hcl
+
+# Print version information
+cargo run --release -- --version
 ```
 
 ### Platform Notes
