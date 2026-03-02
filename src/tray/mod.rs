@@ -1,16 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
     NextWallpaper,
+    ReloadSettings,
     Exit,
 }
 
 #[derive(Debug)]
 pub struct SessionStats {
-    timer_display: String,
-    remote_update_timer_display: String,
+    timer_display: RwLock<String>,
+    remote_update_timer_display: RwLock<String>,
     total_images: AtomicU64,
     images_shown: AtomicU64,
     manual_skips: AtomicU64,
@@ -20,8 +22,8 @@ pub struct SessionStats {
 impl SessionStats {
     pub fn new(timer_display: String, remote_update_timer_display: String) -> Self {
         Self {
-            timer_display,
-            remote_update_timer_display,
+            timer_display: RwLock::new(timer_display),
+            remote_update_timer_display: RwLock::new(remote_update_timer_display),
             total_images: AtomicU64::new(0),
             images_shown: AtomicU64::new(0),
             manual_skips: AtomicU64::new(0),
@@ -29,12 +31,32 @@ impl SessionStats {
         }
     }
 
-    pub fn timer_display(&self) -> &str {
-        &self.timer_display
+    pub fn timer_display(&self) -> String {
+        self.timer_display
+            .read()
+            .expect("timer display lock poisoned")
+            .clone()
     }
 
-    pub fn remote_update_timer_display(&self) -> &str {
-        &self.remote_update_timer_display
+    pub fn set_timer_display(&self, timer_display: String) {
+        *self
+            .timer_display
+            .write()
+            .expect("timer display lock poisoned") = timer_display;
+    }
+
+    pub fn remote_update_timer_display(&self) -> String {
+        self.remote_update_timer_display
+            .read()
+            .expect("remote update timer display lock poisoned")
+            .clone()
+    }
+
+    pub fn set_remote_update_timer_display(&self, remote_update_timer_display: String) {
+        *self
+            .remote_update_timer_display
+            .write()
+            .expect("remote update timer display lock poisoned") = remote_update_timer_display;
     }
 
     pub fn set_total_images(&self, total_images: u64) {
@@ -207,11 +229,15 @@ mod tests {
         assert_eq!(stats.remote_update_timer_display(), "2h");
 
         stats.set_total_images(42);
+        stats.set_timer_display("15m".to_string());
+        stats.set_remote_update_timer_display("45m".to_string());
         stats.inc_images_shown();
         stats.inc_images_shown();
         stats.inc_manual_skips();
 
         assert_eq!(stats.total_images(), 42);
+        assert_eq!(stats.timer_display(), "15m");
+        assert_eq!(stats.remote_update_timer_display(), "45m");
         assert_eq!(stats.images_shown(), 2);
         assert_eq!(stats.manual_skips(), 1);
     }

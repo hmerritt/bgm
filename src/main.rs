@@ -47,21 +47,21 @@ async fn main() -> Result<()> {
     let config_path = options.config_path.clone();
     let created = ensure_config_exists(&config_path)?;
 
-    let config = load_from_path(&config_path)?;
+    let mut config = load_from_path(&config_path)?;
     logging::init(&config.log_level);
     if created {
         info!(path = %config_path.display(), "created default config");
     }
     info!(path = %config_path.display(), "loaded config");
 
-    let cache = Arc::new(CacheManager::new(&config)?);
+    let mut cache = Arc::new(CacheManager::new(&config)?);
     if let Err(error) = cache.cleanup() {
         warn!(error = %error, "cache cleanup failed");
     }
 
     let mut sources = build_sources(&config, cache.clone())?;
     let backend = wallpaper::default_backend();
-    let state_store = StateStore::new(config.state_file.clone());
+    let mut state_store = StateStore::new(config.state_file.clone());
 
     let persisted_state = match state_store.load() {
         Ok(state) => state,
@@ -148,6 +148,72 @@ async fn main() -> Result<()> {
                             Ok(None) => warn!("tray requested switch but no image available"),
                             Err(error) => warn!(error = %error, "tray-requested wallpaper switch failed"),
                         }
+                    }
+                    Some(TrayEvent::ReloadSettings) => {
+                        info!("tray requested settings reload");
+
+                        let new_config = match load_from_path(&config_path) {
+                            Ok(new_config) => new_config,
+                            Err(error) => {
+                                warn!(error = %error, "failed to reload config; keeping current runtime settings");
+                                continue;
+                            }
+                        };
+
+                        let new_cache = match CacheManager::new(&new_config) {
+                            Ok(new_cache) => Arc::new(new_cache),
+                            Err(error) => {
+                                warn!(error = %error, "failed to initialize cache from reloaded config; keeping current runtime settings");
+                                continue;
+                            }
+                        };
+                        if let Err(error) = new_cache.cleanup() {
+                            warn!(error = %error, "cache cleanup failed after settings reload");
+                        }
+
+                        let mut new_sources = match build_sources(&new_config, new_cache.clone()) {
+                            Ok(new_sources) => new_sources,
+                            Err(error) => {
+                                warn!(error = %error, "failed to build sources from reloaded config; keeping current runtime settings");
+                                continue;
+                            }
+                        };
+
+                        let refreshed_candidates = match refresh_all_sources(&mut new_sources).await {
+                            Ok(candidates) => candidates,
+                            Err(error) => {
+                                warn!(error = %error, "failed to refresh sources after settings reload; keeping current runtime settings");
+                                continue;
+                            }
+                        };
+
+                        let (next_local_count, next_remote_count) =
+                            count_images_by_origin(&refreshed_candidates);
+                        let mut preserved_state = rotation.export_state();
+                        preserved_state.last_image_id = last_image_id.clone();
+                        rotation.rebuild_pool(refreshed_candidates);
+                        rotation.restore_state(&preserved_state);
+
+                        config = new_config;
+                        cache = new_cache;
+                        sources = new_sources;
+                        state_store = StateStore::new(config.state_file.clone());
+                        scheduler = Scheduler::new(config.timer, config.remote_update_timer);
+                        local_images_count = next_local_count;
+                        remote_images_count = next_remote_count;
+                        session_stats.set_total_images(local_images_count + remote_images_count);
+                        session_stats.set_timer_display(format_config_duration(config.timer));
+                        session_stats.set_remote_update_timer_display(format_config_duration(
+                            config.remote_update_timer,
+                        ));
+                        logging::set_level(&config.log_level);
+
+                        if let Err(error) =
+                            persist_state(&state_store, &rotation, last_image_id.clone())
+                        {
+                            warn!(error = %error, "failed to persist state after settings reload");
+                        }
+                        info!("settings reload complete");
                     }
                     Some(TrayEvent::Exit) => {
                         info!("tray requested exit, stopping bgm");

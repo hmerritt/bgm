@@ -40,14 +40,17 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\bgm-tray-single-instance";
 const TRAY_ICON_RESOURCE_ID: u16 = 101;
 const NEXT_BACKGROUND_ICON_RESOURCE_ID: u16 = 203;
+const REFRESH_ICON_RESOURCE_ID: u16 = 204;
 const SETTINGS_ICON_RESOURCE_ID: u16 = 201;
 const EXIT_ICON_RESOURCE_ID: u16 = 202;
 const NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID: u16 = 303;
+const REFRESH_ICON_FALLBACK_RESOURCE_ID: u16 = 304;
 const SETTINGS_ICON_FALLBACK_RESOURCE_ID: u16 = 301;
 const EXIT_ICON_FALLBACK_RESOURCE_ID: u16 = 302;
 const TRAY_COMMAND_NEXT_BACKGROUND: u32 = 1000;
-const TRAY_COMMAND_SETTINGS: u32 = 1001;
-const TRAY_COMMAND_EXIT: u32 = 1002;
+const TRAY_COMMAND_RELOAD_SETTINGS: u32 = 1001;
+const TRAY_COMMAND_SETTINGS: u32 = 1002;
+const TRAY_COMMAND_EXIT: u32 = 1003;
 const MENU_ICON_SIZE: i32 = 16;
 const RT_BITMAP_RESOURCE_TYPE: u16 = 2;
 const RT_GROUP_ICON_RESOURCE_TYPE: u16 = 14;
@@ -314,12 +317,18 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     let skipped_label = wide_null(&format_stat_row("Skipped", &skipped_value));
     let running_label = wide_null(&format_stat_row("Running", &running_value));
     let next_background_label = wide_null("Next Background");
+    let reload_settings_label = wide_null("Reload Settings");
     let settings_label = wide_null("Settings");
     let exit_label = wide_null("Exit");
     let next_background_icon = load_menu_icon_bitmap(
         data.hinstance,
         NEXT_BACKGROUND_ICON_RESOURCE_ID,
         NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID,
+    );
+    let refresh_icon = load_menu_icon_bitmap(
+        data.hinstance,
+        REFRESH_ICON_RESOURCE_ID,
+        REFRESH_ICON_FALLBACK_RESOURCE_ID,
     );
     let settings_icon = load_menu_icon_bitmap(
         data.hinstance,
@@ -365,16 +374,25 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     if !insert_command_menu_item(
         menu,
         8,
+        TRAY_COMMAND_RELOAD_SETTINGS,
+        reload_settings_label.as_ptr(),
+        refresh_icon,
+    ) {
+        tracing::warn!("failed to add Reload Settings tray menu item");
+    }
+    if !insert_command_menu_item(
+        menu,
+        9,
         TRAY_COMMAND_SETTINGS,
         settings_label.as_ptr(),
         settings_icon,
     ) {
         tracing::warn!("failed to add Settings tray menu item");
     }
-    if !insert_separator_menu_item(menu, 9) {
+    if !insert_separator_menu_item(menu, 10) {
         tracing::warn!("failed to add separator tray menu item");
     }
-    if !insert_command_menu_item(menu, 10, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
+    if !insert_command_menu_item(menu, 11, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
         tracing::warn!("failed to add Exit tray menu item");
     }
 
@@ -402,6 +420,7 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
 
     DestroyMenu(menu);
     cleanup_menu_icon_bitmap(next_background_icon);
+    cleanup_menu_icon_bitmap(refresh_icon);
     cleanup_menu_icon_bitmap(settings_icon);
     cleanup_menu_icon_bitmap(exit_icon);
 }
@@ -410,6 +429,9 @@ unsafe fn handle_tray_command(hwnd: HWND, data: &WindowData, command_id: u32) {
     match command_id {
         TRAY_COMMAND_NEXT_BACKGROUND => {
             let _ = data.event_tx.send(TrayEvent::NextWallpaper);
+        }
+        TRAY_COMMAND_RELOAD_SETTINGS => {
+            let _ = data.event_tx.send(TrayEvent::ReloadSettings);
         }
         TRAY_COMMAND_SETTINGS => {
             open_settings_from_tray(hwnd, data);
