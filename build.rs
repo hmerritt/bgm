@@ -45,6 +45,7 @@ fn main() {
 
 fn compile_precompiled_shaders(manifest_dir: &Path, out_dir: &Path) {
     let shaders_dir = manifest_dir.join("shaders");
+    println!("cargo:rerun-if-changed={}", shaders_dir.display());
     let shader_builder_manifest = shaders_dir.join("shader_builder").join("Cargo.toml");
     if !shader_builder_manifest.exists() {
         panic!(

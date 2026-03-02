@@ -11,7 +11,8 @@ const MIN_TIMER_SECS: u64 = 5;
 const MIN_REMOTE_UPDATE_SECS: u64 = 30;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
-const DEFAULT_SHADER_NAME: &str = "gradient_shader";
+const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
+const LEGACY_SHADER_NAME: &str = "gradient_shader";
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 
@@ -180,7 +181,7 @@ renderer = "image"
 
 # Shader mode options (used when renderer = "shader")
 #shader = {{
-#	name = "gradient_shader"
+#	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2"
 #	target_fps = 60
 #	mouse_enabled = false
 #}}
@@ -287,6 +288,11 @@ fn parse_shader_config(
     if name.is_empty() {
         bail!("shader.name must not be empty");
     }
+    let name = if name == LEGACY_SHADER_NAME {
+        DEFAULT_SHADER_NAME.to_string()
+    } else {
+        name
+    };
 
     Ok(Some(ShaderConfig {
         name,
@@ -474,7 +480,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         fs::create_dir_all(&pictures).unwrap();
 
         let raw = default_hcl(&pictures);
-        assert!(raw.contains("name = \"gradient_shader\""));
+        assert!(raw.contains("name = \"gradient_glossy\""));
         let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
         assert_eq!(cfg.timer.as_secs(), 10_800);
@@ -503,7 +509,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 renderer = "shader"
 sources = [ {{ type = "directory", path = "{}" }} ]
 shader = {{
-  name = "gradient_shader"
+  name = "gradient_glossy"
   crate_path = "shaders/legacy"
   hot_reload = true
   reload_debounce_ms = 500
@@ -516,9 +522,31 @@ shader = {{
 
         let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
-        assert_eq!(shader.name, "gradient_shader");
+        assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.target_fps, 75);
         assert!(shader.mouse_enabled);
+    }
+
+    #[test]
+    fn legacy_shader_name_alias_maps_to_gradient_glossy() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  name = "gradient_shader"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.name, "gradient_glossy");
     }
 
     #[test]

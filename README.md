@@ -45,8 +45,9 @@ log_level = "info"
 renderer = "image"
 
 # Shader mode options (used when renderer = "shader")
+# Available shader names: "gradient_glossy", "limestone_cave", "dither_asci_1", "dither_asci_2"
 # [shader]
-# name = "gradient_shader"
+# name = "gradient_glossy"
 # target_fps = 60
 # mouse_enabled = false
 
