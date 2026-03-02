@@ -15,7 +15,7 @@ mod wallpaper;
 use crate::cache::CacheManager;
 use crate::config::{load_from_path, RendererMode};
 use crate::errors::Result;
-use crate::renderer::{RendererCommand, RendererEvent, ShaderRenderer};
+use crate::renderer::{RendererEvent, ShaderRenderer};
 use crate::rotation::RotationManager;
 use crate::scheduler::{Scheduler, SchedulerEvent};
 use crate::sources::{build_sources, ImageCandidate, ImageSource, Origin, SourceKind};
@@ -171,7 +171,6 @@ async fn main() -> Result<()> {
                     match renderer_event {
                         RendererEvent::Ready => info!("shader renderer ready"),
                         RendererEvent::Running => info!("shader renderer running"),
-                        RendererEvent::Paused => info!("shader renderer paused"),
                         RendererEvent::Stopped => info!("shader renderer stopped"),
                         RendererEvent::Fatal { message } => {
                             warn!(error = %message, "shader renderer failed, switching to image mode");
@@ -328,56 +327,6 @@ async fn main() -> Result<()> {
                             warn!(error = %error, "failed to persist state after settings reload");
                         }
                         info!("settings reload complete");
-                    }
-                    Some(TrayEvent::SwitchToImage) => {
-                        if active_mode != ActiveMode::Shader {
-                            continue;
-                        }
-                        if let Some(renderer) = renderer.as_ref() {
-                            let _ = renderer.send_command(RendererCommand::DisableOutput);
-                        }
-                        if let Some(renderer) = renderer.as_mut() {
-                            renderer.stop();
-                        }
-                        renderer = None;
-                        renderer_event_rx = None;
-                        active_mode = ActiveMode::Image;
-                        session_stats.set_shader_active(false);
-
-                        match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
-                            Ok(Some(next_id)) => {
-                                session_stats.inc_images_shown();
-                                last_image_id = Some(next_id);
-                                if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
-                                    warn!(error = %error, "failed to persist state after tray switch to image mode");
-                                }
-                            }
-                            Ok(None) => warn!("tray requested image mode but no image was available"),
-                            Err(error) => warn!(error = %error, "tray switch to image mode failed"),
-                        }
-                    }
-                    Some(TrayEvent::SwitchToShader) => {
-                        if active_mode != ActiveMode::Image {
-                            continue;
-                        }
-
-                        let Some(shader_config) = config.shader.clone() else {
-                            warn!("tray requested shader mode but shader config is missing");
-                            continue;
-                        };
-
-                        match ShaderRenderer::start(shader_config) {
-                            Ok(mut new_renderer) => {
-                                renderer_event_rx = new_renderer.take_event_receiver();
-                                renderer = Some(new_renderer);
-                                active_mode = ActiveMode::Shader;
-                                session_stats.set_shader_active(true);
-                                info!("tray switched runtime to shader mode");
-                            }
-                            Err(error) => {
-                                warn!(error = %error, "tray requested shader mode but startup failed");
-                            }
-                        }
                     }
                     Some(TrayEvent::Exit) => {
                         info!("tray requested exit, stopping aura");

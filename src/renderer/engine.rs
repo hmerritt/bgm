@@ -66,7 +66,6 @@ impl ShaderRenderer {
 
     pub fn send_command(&self, command: RendererCommand) -> Result<()> {
         let user_event = match command {
-            RendererCommand::DisableOutput => UserEvent::DisableOutput,
             RendererCommand::Stop => UserEvent::Stop,
         };
         self.proxy
@@ -91,7 +90,6 @@ impl Drop for ShaderRenderer {
 
 #[derive(Debug, Clone)]
 enum UserEvent {
-    DisableOutput,
     Stop,
 }
 
@@ -280,16 +278,6 @@ impl ApplicationHandler<UserEvent> for RendererApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::DisableOutput => {
-                self.enabled = false;
-                self.paused = true;
-                if let Some(window) = &self.window {
-                    if let Ok(hwnd) = window_hwnd(window.as_ref()) {
-                        show_desktop_window(hwnd, false);
-                    }
-                }
-                let _ = self.event_tx.send(RendererEvent::Paused);
-            }
             UserEvent::Stop => {
                 event_loop.exit();
             }

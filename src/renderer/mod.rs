@@ -1,6 +1,5 @@
 #[derive(Debug, Clone)]
 pub enum RendererCommand {
-    DisableOutput,
     Stop,
 }
 
@@ -8,7 +7,6 @@ pub enum RendererCommand {
 pub enum RendererEvent {
     Ready,
     Running,
-    Paused,
     Fatal { message: String },
     Stopped,
 }

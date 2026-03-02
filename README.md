@@ -110,13 +110,13 @@ cargo run --release -- --version
 - Forces Windows wallpaper style to `Fill` on apply
 - Windows tray icon (enabled by default)
     - Double-click tray icon: switch to next wallpaper immediately in image mode (no-op in shader mode)
-    - Right-click tray icon: shows stats (`Timer`, `Remote Update`, `Images`, `Shown`, `Skipped`, `Running`) and mode-aware menu items
+    - Right-click tray icon: shows stats (`Timer`, `Remote Update`, `Images`, `Shown`, `Skipped`, `Running`) and control menu items
     - `Images` counts unique merged candidates across all sources, and `Shown` counts images applied in the current session
-    - In image mode: `Next Background`, `Reload Settings`, `Shader mode`, `Settings`, `Exit`
-    - In shader mode: `Reload Settings`, `Image mode`, `Settings`, `Exit`
+    - In image mode: `Next Background`, `Reload Settings`, `Settings`, `Exit`
+    - In shader mode: `Reload Settings`, `Settings`, `Exit`
     - `Next Background` switches immediately, `Reload Settings` reloads `aura.hcl` into the running process, `Settings` opens the active `aura.hcl`, and a separator appears above `Exit`
     - `Running` is minute-precision (`<1m` when under a minute) and shows days once runtime exceeds 72 hours (example: `3d 21h 49m`)
-    - Uses embedded tray/menu icons generated from `assets/tray.png`, `assets/menu-next-background.png`, `assets/menu-refresh.png`, `assets/menu-swap.png`, `assets/menu-settings.png`, and `assets/menu-exit.png` (menu icons fall back to embedded icon resources if bitmap loading fails)
+    - Uses embedded tray/menu icons generated from `assets/tray.png`, `assets/menu-next-background.png`, `assets/menu-refresh.png`, `assets/menu-settings.png`, and `assets/menu-exit.png` (menu icons fall back to embedded icon resources if bitmap loading fails)
 - No-repeat shuffle rotation cycle
 - Local and remote image cache
 - Zero-open passthrough for matching `image_format` (`jpg`/`jpeg` alias supported)
