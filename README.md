@@ -5,7 +5,8 @@ A simple, lightweight, background image manager written in Rust.
 ## ⚡ Features
 
 - Small in size, low memory footprint
-- Scales images to perfectly fit the screen (will crop if necessary)
+- Fast wallpaper switching with same-format passthrough
+- Re-encodes images only when `image_format` differs from source format
 - Tray icon to trigger a new image quickly
 - Multiple image `sources` can be added
     - Single image path
@@ -86,5 +87,6 @@ cargo run --release -- --version
     - Uses embedded icon generated from `assets/new-tray.png` (falls back to default if unavailable)
 - No-repeat shuffle rotation cycle
 - Local and remote image cache
-- Cover resize + center crop image processing
+- Zero-open passthrough for matching `image_format` (`jpg`/`jpeg` alias supported)
+- Conversion-only image pipeline for format mismatches
 - Persisted runtime state across restarts

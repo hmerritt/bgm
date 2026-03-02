@@ -1,22 +1,23 @@
 use crate::cache::CacheManager;
 use crate::config::OutputFormat;
 use crate::errors::Result;
-use crate::wallpaper::ScreenSpec;
 use anyhow::Context;
 use image::codecs::jpeg::JpegEncoder;
-use image::imageops::{crop_imm, resize, FilterType};
 use image::{DynamicImage, ImageFormat, ImageReader};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn prepare_for_screen(
+pub fn prepare_for_output(
     input: &Path,
-    screen: ScreenSpec,
     cache: &CacheManager,
     format: OutputFormat,
     jpeg_quality: u8,
 ) -> Result<PathBuf> {
-    let key = build_cache_key(input, screen, format, jpeg_quality)?;
+    if should_passthrough(input, format) {
+        return Ok(input.to_path_buf());
+    }
+
+    let key = build_cache_key(input, format, jpeg_quality)?;
     let cached = cache.processed_path_for_key(&key, format);
     if cached.exists() {
         return Ok(cached);
@@ -29,49 +30,35 @@ pub fn prepare_for_screen(
         .decode()
         .with_context(|| format!("failed to decode image {}", input.display()))?;
 
-    let resized = cover_scale_center_crop(&source, screen);
-    save_output(resized, &cached, format, jpeg_quality)?;
+    save_output(source, &cached, format, jpeg_quality)?;
     Ok(cached)
 }
 
-fn build_cache_key(
-    input: &Path,
-    screen: ScreenSpec,
-    format: OutputFormat,
-    jpeg_quality: u8,
-) -> Result<String> {
+fn build_cache_key(input: &Path, format: OutputFormat, jpeg_quality: u8) -> Result<String> {
     let bytes = fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
     let source_hash = blake3::hash(&bytes).to_hex();
     let key = format!(
-        "{}:{}x{}:{}:{}",
+        "{}:{}:{}",
         source_hash,
-        screen.width,
-        screen.height,
         format.extension(),
         jpeg_quality
     );
     Ok(blake3::hash(key.as_bytes()).to_hex().to_string())
 }
 
-fn cover_scale_center_crop(image: &DynamicImage, screen: ScreenSpec) -> DynamicImage {
-    let src = image.to_rgba8();
-    let (src_w, src_h) = src.dimensions();
+fn should_passthrough(path: &Path, output_format: OutputFormat) -> bool {
+    path_output_format(path)
+        .map(|input_format| input_format == output_format)
+        .unwrap_or(false)
+}
 
-    let target_ratio = screen.width as f32 / screen.height as f32;
-    let src_ratio = src_w as f32 / src_h as f32;
-
-    let cropped = if src_ratio > target_ratio {
-        let new_w = ((src_h as f32) * target_ratio).round().max(1.0) as u32;
-        let x = (src_w.saturating_sub(new_w)) / 2;
-        crop_imm(&src, x, 0, new_w, src_h).to_image()
-    } else {
-        let new_h = ((src_w as f32) / target_ratio).round().max(1.0) as u32;
-        let y = (src_h.saturating_sub(new_h)) / 2;
-        crop_imm(&src, 0, y, src_w, new_h).to_image()
-    };
-
-    let resized = resize(&cropped, screen.width, screen.height, FilterType::Lanczos3);
-    DynamicImage::ImageRgba8(resized)
+fn path_output_format(path: &Path) -> Option<OutputFormat> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some(OutputFormat::Jpg),
+        "png" => Some(OutputFormat::Png),
+        _ => None,
+    }
 }
 
 fn save_output(
@@ -101,4 +88,110 @@ fn save_output(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BgmConfig;
+    use image::{ImageBuffer, Rgba};
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    fn test_cache_manager(base: &Path) -> CacheManager {
+        let config = BgmConfig {
+            timer: Duration::from_secs(300),
+            remote_update_timer: Duration::from_secs(3600),
+            sources: Vec::new(),
+            cache_dir: base.join("cache"),
+            state_file: base.join("state.json"),
+            log_level: "info".to_string(),
+            image_format: OutputFormat::Jpg,
+            jpeg_quality: 90,
+            max_cache_bytes: 1024 * 1024,
+            max_cache_age: Duration::from_secs(24 * 60 * 60),
+        };
+        CacheManager::new(&config).unwrap()
+    }
+
+    #[test]
+    fn maps_path_extensions_to_output_format() {
+        assert_eq!(
+            path_output_format(Path::new("photo.jpg")),
+            Some(OutputFormat::Jpg)
+        );
+        assert_eq!(
+            path_output_format(Path::new("photo.jpeg")),
+            Some(OutputFormat::Jpg)
+        );
+        assert_eq!(
+            path_output_format(Path::new("photo.JPG")),
+            Some(OutputFormat::Jpg)
+        );
+        assert_eq!(
+            path_output_format(Path::new("photo.png")),
+            Some(OutputFormat::Png)
+        );
+        assert_eq!(path_output_format(Path::new("photo.webp")), None);
+    }
+
+    #[test]
+    fn passthrough_returns_original_path_without_decode() {
+        let tmp = tempdir().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let input = tmp.path().join("broken.jpg");
+        fs::write(&input, b"not-an-image").unwrap();
+
+        let output = prepare_for_output(&input, &cache, OutputFormat::Jpg, 90).unwrap();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn conversion_reencodes_to_requested_format() {
+        let tmp = tempdir().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let input = tmp.path().join("source.png");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(2, 2, Rgba([10, 20, 30, 255]));
+        DynamicImage::ImageRgba8(img)
+            .save_with_format(&input, ImageFormat::Png)
+            .unwrap();
+
+        let output = prepare_for_output(&input, &cache, OutputFormat::Jpg, 90).unwrap();
+        assert_ne!(output, input);
+        assert_eq!(
+            output.extension().and_then(|x| x.to_str()),
+            Some(OutputFormat::Jpg.extension())
+        );
+        assert!(output.exists());
+    }
+
+    #[test]
+    fn conversion_uses_cached_output() {
+        let tmp = tempdir().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let input = tmp.path().join("source.png");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(2, 2, Rgba([90, 80, 70, 255]));
+        DynamicImage::ImageRgba8(img)
+            .save_with_format(&input, ImageFormat::Png)
+            .unwrap();
+
+        let first = prepare_for_output(&input, &cache, OutputFormat::Jpg, 90).unwrap();
+        let second = prepare_for_output(&input, &cache, OutputFormat::Jpg, 90).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn unknown_extension_does_not_passthrough() {
+        let tmp = tempdir().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let input = tmp.path().join("source.bin");
+        fs::write(&input, b"definitely-not-an-image").unwrap();
+
+        let result = prepare_for_output(&input, &cache, OutputFormat::Png, 90);
+        assert!(result.is_err());
+    }
 }

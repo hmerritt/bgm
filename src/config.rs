@@ -13,7 +13,7 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     Jpg,
