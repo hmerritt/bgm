@@ -53,10 +53,17 @@ enum RawSourceConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum DurationInput {
+    Seconds(u64),
+    Text(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
-    timer: Option<u64>,
+    timer: Option<DurationInput>,
     #[serde(rename = "remoteUpdateTimer")]
-    remote_update_timer: Option<u64>,
+    remote_update_timer: Option<DurationInput>,
     sources: Vec<RawSourceConfig>,
     cache_dir: Option<PathBuf>,
     state_file: Option<PathBuf>,
@@ -113,8 +120,8 @@ pub fn parse_from_str(content: &str, path: &Path) -> Result<BgmConfig> {
 pub fn default_hcl(pictures_dir: &Path) -> String {
     let pictures = hcl_path(pictures_dir);
     format!(
-        r#"timer = 300
-remoteUpdateTimer = 3600
+        r#"timer = "3h"
+remoteUpdateTimer = "2h"
 image_format = "jpg"
 jpeg_quality = 90
 log_level = "info"
@@ -134,14 +141,16 @@ impl BgmConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("bgm");
 
-        let timer_secs = raw.timer.unwrap_or(DEFAULT_TIMER_SECS);
+        let timer_secs = parse_duration_field("timer", raw.timer, DEFAULT_TIMER_SECS)?;
         if timer_secs < MIN_TIMER_SECS {
             bail!("timer must be at least {MIN_TIMER_SECS} seconds");
         }
 
-        let remote_secs = raw
-            .remote_update_timer
-            .unwrap_or(DEFAULT_REMOTE_UPDATE_TIMER_SECS);
+        let remote_secs = parse_duration_field(
+            "remoteUpdateTimer",
+            raw.remote_update_timer,
+            DEFAULT_REMOTE_UPDATE_TIMER_SECS,
+        )?;
         if remote_secs < MIN_REMOTE_UPDATE_SECS {
             bail!("remoteUpdateTimer must be at least {MIN_REMOTE_UPDATE_SECS} seconds");
         }
@@ -188,6 +197,62 @@ impl BgmConfig {
             max_cache_age,
         })
     }
+}
+
+fn parse_duration_field(
+    field_name: &str,
+    value: Option<DurationInput>,
+    default_secs: u64,
+) -> Result<u64> {
+    match value {
+        Some(DurationInput::Seconds(secs)) => Ok(secs),
+        Some(DurationInput::Text(raw)) => parse_duration_string(field_name, &raw),
+        None => Ok(default_secs),
+    }
+}
+
+fn parse_duration_string(field_name: &str, raw: &str) -> Result<u64> {
+    let trimmed = raw.trim();
+    let Some((unit_pos, unit_char)) = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace())
+    else {
+        bail!(
+            "{field_name} must be a positive integer or duration string like \"40s\", \"12m\", \"3h\""
+        );
+    };
+
+    let unit = unit_char.to_ascii_lowercase();
+    let multiplier = match unit {
+        's' => 1_u64,
+        'm' => 60_u64,
+        'h' => 3600_u64,
+        _ => {
+            bail!(
+                "{field_name} has invalid duration unit \"{unit_char}\"; expected one of: s, m, h"
+            )
+        }
+    };
+
+    let number_str = trimmed[..unit_pos].trim();
+    if number_str.is_empty() || !number_str.chars().all(|ch| ch.is_ascii_digit()) {
+        bail!(
+            "{field_name} must be a positive integer followed by s/m/h, for example \"40s\", \"12m\", \"3h\""
+        );
+    }
+
+    let value = number_str.parse::<u64>().with_context(|| {
+        format!(
+            "{field_name} must contain a valid integer before its unit; got \"{number_str}\""
+        )
+    })?;
+
+    value.checked_mul(multiplier).with_context(|| {
+        format!(
+            "{field_name} duration is too large to represent in seconds: \"{trimmed}\""
+        )
+    })
 }
 
 fn validate_source(source: RawSourceConfig, config_parent: &Path) -> Result<SourceConfig> {
@@ -331,5 +396,113 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             }
             _ => panic!("expected directory source in generated config"),
         }
+    }
+
+    #[test]
+    fn parses_duration_strings_for_timer_fields() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+timer = "40s"
+remoteUpdateTimer = "12m"
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        assert_eq!(cfg.timer.as_secs(), 40);
+        assert_eq!(cfg.remote_update_timer.as_secs(), 720);
+    }
+
+    #[test]
+    fn parses_case_insensitive_duration_strings_with_spaces() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+timer = "3 H"
+remoteUpdateTimer = "40 S"
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        assert_eq!(cfg.timer.as_secs(), 10_800);
+        assert_eq!(cfg.remote_update_timer.as_secs(), 40);
+    }
+
+    #[test]
+    fn rejects_invalid_duration_string_formats() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        for timer in ["\"40\"", "\"1d\"", "\"abc\"", "\"-5m\"", "\"1.5h\"", "\"1h30m\""] {
+            let raw = format!(
+                r#"
+timer = {}
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+                timer,
+                hcl_path(&dir)
+            );
+            assert!(
+                parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err(),
+                "expected timer={} to fail",
+                timer
+            );
+        }
+    }
+
+    #[test]
+    fn applies_minimums_after_duration_parsing() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let tiny_timer = format!(
+            r#"
+timer = "2s"
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            hcl_path(&dir)
+        );
+        assert!(parse_from_str(&tiny_timer, &tmp.path().join("bgm.hcl")).is_err());
+
+        let tiny_remote = format!(
+            r#"
+timer = "10s"
+remoteUpdateTimer = "20s"
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            hcl_path(&dir)
+        );
+        assert!(parse_from_str(&tiny_remote, &tmp.path().join("bgm.hcl")).is_err());
+    }
+
+    #[test]
+    fn rejects_overflowing_duration_values() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let huge = format!("\"{}h\"", u64::MAX);
+        let raw = format!(
+            r#"
+timer = {}
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            huge,
+            hcl_path(&dir)
+        );
+
+        assert!(parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err());
     }
 }

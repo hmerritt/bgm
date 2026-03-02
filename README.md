@@ -16,8 +16,8 @@ A simple, lightweight, background image manager written in Rust.
 ## Example `bgm.hcl`
 
 ```hcl
-timer = 300
-remoteUpdateTimer = 3600
+timer = "45m"
+remoteUpdateTimer = "1h"
 image_format = "jpg"
 jpeg_quality = 90
 log_level = "info"
