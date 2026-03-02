@@ -42,12 +42,13 @@ impl WgpuRuntime {
         shader_config: ShaderConfig,
         desktop_rect: DesktopRect,
     ) -> Result<Self> {
+        let quality_settings = shader_config.quality.settings();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = instance
             .create_surface(window.clone())
             .map_err(|error| anyhow!("failed to create wgpu surface: {error}"))?;
 
-        let power_preference = match shader_config.power_preference {
+        let power_preference = match quality_settings.power_preference {
             ShaderPowerPreference::LowPower => wgpu::PowerPreference::LowPower,
             ShaderPowerPreference::HighPerformance => wgpu::PowerPreference::HighPerformance,
         };
@@ -94,25 +95,27 @@ impl WgpuRuntime {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: u32::from(shader_config.max_frame_latency),
+            desired_maximum_frame_latency: u32::from(quality_settings.max_frame_latency),
         };
 
         let estimated_bytes =
-            estimate_swapchain_memory_bytes(width, height, shader_config.max_frame_latency);
+            estimate_swapchain_memory_bytes(width, height, quality_settings.max_frame_latency);
         let estimated_mb = bytes_to_megabytes(estimated_bytes);
         tracing::info!(
             width,
             height,
             desktop_scope = ?shader_config.desktop_scope,
-            power_preference = ?shader_config.power_preference,
-            max_frame_latency = shader_config.max_frame_latency,
-            memory_target_mb = shader_config.memory_target_mb,
+            quality = ?shader_config.quality,
+            power_preference = ?quality_settings.power_preference,
+            max_frame_latency = quality_settings.max_frame_latency,
+            memory_target_mb = quality_settings.memory_target_mb,
             estimated_swapchain_mb = estimated_mb,
             "shader runtime surface memory estimate"
         );
-        if estimated_mb > shader_config.memory_target_mb as f64 {
+        if estimated_mb > quality_settings.memory_target_mb as f64 {
             tracing::warn!(
-                memory_target_mb = shader_config.memory_target_mb,
+                quality = ?shader_config.quality,
+                memory_target_mb = quality_settings.memory_target_mb,
                 estimated_swapchain_mb = estimated_mb,
                 "shader swapchain estimate exceeds memory target; continuing shader mode"
             );
