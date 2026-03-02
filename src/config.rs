@@ -120,15 +120,27 @@ pub fn parse_from_str(content: &str, path: &Path) -> Result<BgmConfig> {
 pub fn default_hcl(pictures_dir: &Path) -> String {
     let pictures = hcl_path(pictures_dir);
     format!(
-        r#"timer = "3h"
-remoteUpdateTimer = "2h"
-image_format = "jpg"
-jpeg_quality = 90
-log_level = "info"
+        r#"# bgm (Background Manager) configuration file
 
+# Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
+# Supported source types: "file" | "directory" | "rss"
 sources = [
   {{ type = "directory", path = "{}", recursive = true, extensions = ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }}
 ]
+
+# Duration for switching to a new wallpaper: "40s" | "12m" | "3h"
+timer = "3h"
+
+# Target image format for wallpapers. All source images will be converted to this format before being set as wallpaper: "jpg" | "png"
+image_format = "jpg"
+# Quality for JPEG output (ignored for other formats): 1-100
+jpeg_quality = 90
+
+# Duration for checking remote sources for new images: "40s" | "12m" | "3h"
+remoteUpdateTimer = "2h"
+
+# Log level: "error" | "warn" | "info" | "debug" | "trace"
+log_level = "warn"
 "#,
         pictures
     )

@@ -5,8 +5,8 @@ A simple, lightweight, background image manager written in Rust.
 ## ⚡ Features
 
 - Small in size, low memory footprint
-- Fast wallpaper switching with same-format passthrough
-- Re-encodes images only when `image_format` differs from source format
+- Caches remote images locally for faster switching
+- Automatically re-encodes images for wider format support: `jpeg` | `png` | `bmp` | `gif` | `webp`
 - Tray icon to trigger a new image quickly
 - Multiple image `sources` can be added
     - Single image path
@@ -15,18 +15,31 @@ A simple, lightweight, background image manager written in Rust.
 
 ## Example `bgm.hcl`
 
-```hcl
-timer = "45m"
-remoteUpdateTimer = "1h"
-image_format = "jpg"
-jpeg_quality = 90
-log_level = "info"
+Default location is `~/.config/bgm.hcl`
 
+```hcl
+# Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
+# Supported source types: "file" | "directory" | "rss"
 sources = [
   { type = "file", path = "C:/wallpapers/favorite.jpg" },
   { type = "directory", path = "C:/wallpapers/library", recursive = true, extensions = ["jpg", "png", "webp"] },
   { type = "rss", url = "https://example.com/feed.xml", max_items = 100 }
 ]
+
+# Duration for switching to a new wallpaper: "40s" | "12m" | "3h"
+timer = "45m"
+
+# Target image format for wallpapers. All source images will be converted to this format before being set as wallpaper: "jpg" | "png"
+image_format = "jpg"
+# Quality for JPEG output (ignored for other formats): 1-100
+jpeg_quality = 90
+
+# Duration for checking remote sources for new images: "40s" | "12m" | "3h"
+remoteUpdateTimer = "1h"
+
+# Log level: "error" | "warn" | "info" | "debug" | "trace"
+log_level = "info"
+
 ```
 
 ## Development
