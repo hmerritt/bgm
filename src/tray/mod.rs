@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 pub enum TrayEvent {
     NextWallpaper,
     ReloadSettings,
-    FallbackToImage,
+    SwitchToImage,
+    SwitchToShader,
     Exit,
 }
 

@@ -329,7 +329,10 @@ async fn main() -> Result<()> {
                         }
                         info!("settings reload complete");
                     }
-                    Some(TrayEvent::FallbackToImage) => {
+                    Some(TrayEvent::SwitchToImage) => {
+                        if active_mode != ActiveMode::Shader {
+                            continue;
+                        }
                         if let Some(renderer) = renderer.as_ref() {
                             let _ = renderer.send_command(RendererCommand::DisableOutput);
                         }
@@ -346,11 +349,34 @@ async fn main() -> Result<()> {
                                 session_stats.inc_images_shown();
                                 last_image_id = Some(next_id);
                                 if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
-                                    warn!(error = %error, "failed to persist state after tray fallback to image");
+                                    warn!(error = %error, "failed to persist state after tray switch to image mode");
                                 }
                             }
-                            Ok(None) => warn!("tray requested image fallback but no image was available"),
-                            Err(error) => warn!(error = %error, "tray fallback to image failed"),
+                            Ok(None) => warn!("tray requested image mode but no image was available"),
+                            Err(error) => warn!(error = %error, "tray switch to image mode failed"),
+                        }
+                    }
+                    Some(TrayEvent::SwitchToShader) => {
+                        if active_mode != ActiveMode::Image {
+                            continue;
+                        }
+
+                        let Some(shader_config) = config.shader.clone() else {
+                            warn!("tray requested shader mode but shader config is missing");
+                            continue;
+                        };
+
+                        match ShaderRenderer::start(shader_config) {
+                            Ok(mut new_renderer) => {
+                                renderer_event_rx = new_renderer.take_event_receiver();
+                                renderer = Some(new_renderer);
+                                active_mode = ActiveMode::Shader;
+                                session_stats.set_shader_active(true);
+                                info!("tray switched runtime to shader mode");
+                            }
+                            Err(error) => {
+                                warn!(error = %error, "tray requested shader mode but startup failed");
+                            }
                         }
                     }
                     Some(TrayEvent::Exit) => {

@@ -6,10 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TRAY_ICON_RESOURCE_ID: u16 = 101;
 const NEXT_BACKGROUND_ICON_RESOURCE_ID: u16 = 203;
 const REFRESH_ICON_RESOURCE_ID: u16 = 204;
+const SWAP_ICON_RESOURCE_ID: u16 = 205;
 const SETTINGS_ICON_RESOURCE_ID: u16 = 201;
 const EXIT_ICON_RESOURCE_ID: u16 = 202;
 const NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID: u16 = 303;
 const REFRESH_ICON_FALLBACK_RESOURCE_ID: u16 = 304;
+const SWAP_ICON_FALLBACK_RESOURCE_ID: u16 = 305;
 const SETTINGS_ICON_FALLBACK_RESOURCE_ID: u16 = 301;
 const EXIT_ICON_FALLBACK_RESOURCE_ID: u16 = 302;
 const RUSTGPU_TOOLCHAIN: &str = "nightly-2025-08-04";
@@ -18,6 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/tray.png");
     println!("cargo:rerun-if-changed=assets/menu-next-background.png");
     println!("cargo:rerun-if-changed=assets/menu-refresh.png");
+    println!("cargo:rerun-if-changed=assets/menu-swap.png");
     println!("cargo:rerun-if-changed=assets/menu-settings.png");
     println!("cargo:rerun-if-changed=assets/menu-exit.png");
     println!("cargo:rerun-if-changed=build.rs");
@@ -236,6 +239,13 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
             refresh_source_png.display()
         );
     }
+    let swap_source_png = manifest_dir.join("assets").join("menu-swap.png");
+    if !swap_source_png.exists() {
+        panic!(
+            "missing source menu swap image: {}",
+            swap_source_png.display()
+        );
+    }
     let settings_source_png = manifest_dir.join("assets").join("menu-settings.png");
     if !settings_source_png.exists() {
         panic!(
@@ -257,6 +267,8 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
     generate_menu_bitmap(&next_background_source_png, &generated_next_background_bmp);
     let generated_refresh_bmp = out_dir.join("menu-refresh.bmp");
     generate_menu_bitmap(&refresh_source_png, &generated_refresh_bmp);
+    let generated_swap_bmp = out_dir.join("menu-swap.bmp");
+    generate_menu_bitmap(&swap_source_png, &generated_swap_bmp);
     let generated_settings_bmp = out_dir.join("menu-settings.bmp");
     generate_menu_bitmap(&settings_source_png, &generated_settings_bmp);
     let generated_exit_bmp = out_dir.join("menu-exit.bmp");
@@ -265,6 +277,8 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
     generate_menu_icon(&next_background_source_png, &generated_next_background_ico);
     let generated_refresh_ico = out_dir.join("menu-refresh.ico");
     generate_menu_icon(&refresh_source_png, &generated_refresh_ico);
+    let generated_swap_ico = out_dir.join("menu-swap.ico");
+    generate_menu_icon(&swap_source_png, &generated_swap_ico);
     let generated_settings_ico = out_dir.join("menu-settings.ico");
     generate_menu_icon(&settings_source_png, &generated_settings_ico);
     let generated_exit_ico = out_dir.join("menu-exit.ico");
@@ -276,22 +290,26 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
         .to_string_lossy()
         .replace('\\', "/");
     let refresh_bmp_path_for_rc = generated_refresh_bmp.to_string_lossy().replace('\\', "/");
+    let swap_bmp_path_for_rc = generated_swap_bmp.to_string_lossy().replace('\\', "/");
     let settings_bmp_path_for_rc = generated_settings_bmp.to_string_lossy().replace('\\', "/");
     let exit_bmp_path_for_rc = generated_exit_bmp.to_string_lossy().replace('\\', "/");
     let next_background_ico_path_for_rc = generated_next_background_ico
         .to_string_lossy()
         .replace('\\', "/");
     let refresh_ico_path_for_rc = generated_refresh_ico.to_string_lossy().replace('\\', "/");
+    let swap_ico_path_for_rc = generated_swap_ico.to_string_lossy().replace('\\', "/");
     let settings_ico_path_for_rc = generated_settings_ico.to_string_lossy().replace('\\', "/");
     let exit_ico_path_for_rc = generated_exit_ico.to_string_lossy().replace('\\', "/");
     let rc_payload = format!(
-        "{} ICON \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n",
+        "{} ICON \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n",
         TRAY_ICON_RESOURCE_ID,
         ico_path_for_rc,
         NEXT_BACKGROUND_ICON_RESOURCE_ID,
         next_background_bmp_path_for_rc,
         REFRESH_ICON_RESOURCE_ID,
         refresh_bmp_path_for_rc,
+        SWAP_ICON_RESOURCE_ID,
+        swap_bmp_path_for_rc,
         SETTINGS_ICON_RESOURCE_ID,
         settings_bmp_path_for_rc,
         EXIT_ICON_RESOURCE_ID,
@@ -300,6 +318,8 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
         next_background_ico_path_for_rc,
         REFRESH_ICON_FALLBACK_RESOURCE_ID,
         refresh_ico_path_for_rc,
+        SWAP_ICON_FALLBACK_RESOURCE_ID,
+        swap_ico_path_for_rc,
         SETTINGS_ICON_FALLBACK_RESOURCE_ID,
         settings_ico_path_for_rc,
         EXIT_ICON_FALLBACK_RESOURCE_ID,
