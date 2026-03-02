@@ -2,13 +2,16 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TRAY_ICON_RESOURCE_ID: u16 = 101;
+const NEXT_BACKGROUND_ICON_RESOURCE_ID: u16 = 203;
 const SETTINGS_ICON_RESOURCE_ID: u16 = 201;
 const EXIT_ICON_RESOURCE_ID: u16 = 202;
+const NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID: u16 = 303;
 const SETTINGS_ICON_FALLBACK_RESOURCE_ID: u16 = 301;
 const EXIT_ICON_FALLBACK_RESOURCE_ID: u16 = 302;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/tray.png");
+    println!("cargo:rerun-if-changed=assets/menu-next-background.png");
     println!("cargo:rerun-if-changed=assets/menu-settings.png");
     println!("cargo:rerun-if-changed=assets/menu-exit.png");
     println!("cargo:rerun-if-changed=build.rs");
@@ -32,6 +35,14 @@ fn main() {
     if !source_png.exists() {
         panic!("missing source tray image: {}", source_png.display());
     }
+    let next_background_source_png =
+        std::path::Path::new("assets").join("menu-next-background.png");
+    if !next_background_source_png.exists() {
+        panic!(
+            "missing source menu next background image: {}",
+            next_background_source_png.display()
+        );
+    }
     let settings_source_png = std::path::Path::new("assets").join("menu-settings.png");
     if !settings_source_png.exists() {
         panic!(
@@ -49,10 +60,14 @@ fn main() {
 
     let generated_ico = out_dir.join("tray.ico");
     generate_multi_size_ico(&source_png, &generated_ico);
+    let generated_next_background_bmp = out_dir.join("menu-next-background.bmp");
+    generate_menu_bitmap(&next_background_source_png, &generated_next_background_bmp);
     let generated_settings_bmp = out_dir.join("menu-settings.bmp");
     generate_menu_bitmap(&settings_source_png, &generated_settings_bmp);
     let generated_exit_bmp = out_dir.join("menu-exit.bmp");
     generate_menu_bitmap(&exit_source_png, &generated_exit_bmp);
+    let generated_next_background_ico = out_dir.join("menu-next-background.ico");
+    generate_menu_icon(&next_background_source_png, &generated_next_background_ico);
     let generated_settings_ico = out_dir.join("menu-settings.ico");
     generate_menu_icon(&settings_source_png, &generated_settings_ico);
     let generated_exit_ico = out_dir.join("menu-exit.ico");
@@ -60,18 +75,28 @@ fn main() {
 
     let generated_rc = out_dir.join("bgm-auto.rc");
     let ico_path_for_rc = generated_ico.to_string_lossy().replace('\\', "/");
+    let next_background_bmp_path_for_rc = generated_next_background_bmp
+        .to_string_lossy()
+        .replace('\\', "/");
     let settings_bmp_path_for_rc = generated_settings_bmp.to_string_lossy().replace('\\', "/");
     let exit_bmp_path_for_rc = generated_exit_bmp.to_string_lossy().replace('\\', "/");
+    let next_background_ico_path_for_rc = generated_next_background_ico
+        .to_string_lossy()
+        .replace('\\', "/");
     let settings_ico_path_for_rc = generated_settings_ico.to_string_lossy().replace('\\', "/");
     let exit_ico_path_for_rc = generated_exit_ico.to_string_lossy().replace('\\', "/");
     let rc_payload = format!(
-        "{} ICON \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n",
+        "{} ICON \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} BITMAP \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n{} ICON \"{}\"\n",
         TRAY_ICON_RESOURCE_ID,
         ico_path_for_rc,
+        NEXT_BACKGROUND_ICON_RESOURCE_ID,
+        next_background_bmp_path_for_rc,
         SETTINGS_ICON_RESOURCE_ID,
         settings_bmp_path_for_rc,
         EXIT_ICON_RESOURCE_ID,
         exit_bmp_path_for_rc,
+        NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID,
+        next_background_ico_path_for_rc,
         SETTINGS_ICON_FALLBACK_RESOURCE_ID,
         settings_ico_path_for_rc,
         EXIT_ICON_FALLBACK_RESOURCE_ID,

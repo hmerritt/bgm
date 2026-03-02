@@ -37,10 +37,13 @@ const TRAY_ICON_ID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\bgm-tray-single-instance";
 const TRAY_ICON_RESOURCE_ID: u16 = 101;
+const NEXT_BACKGROUND_ICON_RESOURCE_ID: u16 = 203;
 const SETTINGS_ICON_RESOURCE_ID: u16 = 201;
 const EXIT_ICON_RESOURCE_ID: u16 = 202;
+const NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID: u16 = 303;
 const SETTINGS_ICON_FALLBACK_RESOURCE_ID: u16 = 301;
 const EXIT_ICON_FALLBACK_RESOURCE_ID: u16 = 302;
+const TRAY_COMMAND_NEXT_BACKGROUND: u32 = 1000;
 const TRAY_COMMAND_SETTINGS: u32 = 1001;
 const TRAY_COMMAND_EXIT: u32 = 1002;
 const MENU_ICON_SIZE: i32 = 16;
@@ -288,8 +291,14 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
         return;
     }
 
+    let next_background_label = wide_null("Next Background");
     let settings_label = wide_null("Settings");
     let exit_label = wide_null("Exit");
+    let next_background_icon = load_menu_icon_bitmap(
+        data.hinstance,
+        NEXT_BACKGROUND_ICON_RESOURCE_ID,
+        NEXT_BACKGROUND_ICON_FALLBACK_RESOURCE_ID,
+    );
     let settings_icon = load_menu_icon_bitmap(
         data.hinstance,
         SETTINGS_ICON_RESOURCE_ID,
@@ -304,16 +313,25 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     if !insert_command_menu_item(
         menu,
         0,
+        TRAY_COMMAND_NEXT_BACKGROUND,
+        next_background_label.as_ptr(),
+        next_background_icon,
+    ) {
+        tracing::warn!("failed to add Next Background tray menu item");
+    }
+    if !insert_command_menu_item(
+        menu,
+        1,
         TRAY_COMMAND_SETTINGS,
         settings_label.as_ptr(),
         settings_icon,
     ) {
         tracing::warn!("failed to add Settings tray menu item");
     }
-    if !insert_separator_menu_item(menu, 1) {
+    if !insert_separator_menu_item(menu, 2) {
         tracing::warn!("failed to add separator tray menu item");
     }
-    if !insert_command_menu_item(menu, 2, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
+    if !insert_command_menu_item(menu, 3, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
         tracing::warn!("failed to add Exit tray menu item");
     }
 
@@ -340,12 +358,16 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     PostMessageW(hwnd, WM_NULL, 0, 0);
 
     DestroyMenu(menu);
+    cleanup_menu_icon_bitmap(next_background_icon);
     cleanup_menu_icon_bitmap(settings_icon);
     cleanup_menu_icon_bitmap(exit_icon);
 }
 
 unsafe fn handle_tray_command(hwnd: HWND, data: &WindowData, command_id: u32) {
     match command_id {
+        TRAY_COMMAND_NEXT_BACKGROUND => {
+            let _ = data.event_tx.send(TrayEvent::NextWallpaper);
+        }
         TRAY_COMMAND_SETTINGS => {
             open_settings_from_tray(hwnd, data);
         }
