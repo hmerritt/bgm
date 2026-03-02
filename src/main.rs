@@ -18,7 +18,7 @@ use crate::rotation::RotationManager;
 use crate::scheduler::{Scheduler, SchedulerEvent};
 use crate::sources::{build_sources, ImageCandidate, ImageSource, Origin, SourceKind};
 use crate::state::{PersistedState, StateStore};
-use crate::tray::TrayEvent;
+use crate::tray::{SessionStats, TrayEvent};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::env;
@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
     let mut rotation = RotationManager::new();
     rotation.rebuild_pool(initial_candidates);
     rotation.restore_state(&persisted_state);
+    let session_stats = Arc::new(SessionStats::new());
 
     let (tray_event_tx, mut tray_event_rx) = tokio::sync::mpsc::unbounded_channel::<TrayEvent>();
     let mut _single_instance_guard = None;
@@ -88,7 +89,11 @@ async fn main() -> Result<()> {
             }
         };
 
-        _tray_controller = Some(tray::spawn(config_path.clone(), tray_event_tx.clone())?);
+        _tray_controller = Some(tray::spawn(
+            config_path.clone(),
+            tray_event_tx.clone(),
+            session_stats.clone(),
+        )?);
         info!("tray mode enabled");
     }
 
@@ -96,6 +101,7 @@ async fn main() -> Result<()> {
     if let Some(next_id) =
         try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await?
     {
+        session_stats.inc_images_shown();
         last_image_id = Some(next_id);
         persist_state(&state_store, &rotation, last_image_id.clone())?;
     }
@@ -122,6 +128,8 @@ async fn main() -> Result<()> {
                         }
                         match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
                             Ok(Some(next_id)) => {
+                                session_stats.inc_images_shown();
+                                session_stats.inc_manual_skips();
                                 last_image_id = Some(next_id);
                                 if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
                                     warn!(error = %error, "failed to persist state after tray wallpaper switch");
@@ -155,6 +163,7 @@ async fn main() -> Result<()> {
                         }
                         match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
                             Ok(Some(next_id)) => {
+                                session_stats.inc_images_shown();
                                 last_image_id = Some(next_id);
                                 if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
                                     warn!(error = %error, "failed to persist state after wallpaper switch");

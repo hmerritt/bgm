@@ -1,10 +1,11 @@
 use crate::errors::Result;
-use crate::tray::TrayEvent;
+use crate::tray::{format_running_duration, SessionStats, TrayEvent};
 use anyhow::{anyhow, bail};
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -28,9 +29,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PeekMessageW, PostMessageW, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
     TrackPopupMenu, TranslateMessage, DI_NORMAL, GWLP_USERDATA, HICON, IDI_APPLICATION,
     IMAGE_BITMAP, IMAGE_ICON, LR_CREATEDIBSECTION, LR_DEFAULTSIZE, LR_SHARED, MENUITEMINFOW,
-    MFT_SEPARATOR, MFT_STRING, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STRING, MSG, PM_REMOVE,
-    SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK,
-    WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_NOACTIVATE,
+    MFS_DISABLED, MFT_SEPARATOR, MFT_STRING, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE,
+    MIIM_STRING, MSG, PM_REMOVE, SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WM_APP, WM_LBUTTONDBLCLK, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    WS_EX_NOACTIVATE,
 };
 
 const TRAY_ICON_ID: u32 = 1;
@@ -96,12 +98,16 @@ impl Drop for TrayController {
     }
 }
 
-pub fn spawn(config_path: PathBuf, event_tx: UnboundedSender<TrayEvent>) -> Result<TrayController> {
+pub fn spawn(
+    config_path: PathBuf,
+    event_tx: UnboundedSender<TrayEvent>,
+    session_stats: Arc<SessionStats>,
+) -> Result<TrayController> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
 
     let join_handle = thread::spawn(move || {
-        if let Err(error) = run_tray_loop(config_path, event_tx, shutdown_rx, ready_tx) {
+        if let Err(error) = run_tray_loop(config_path, event_tx, session_stats, shutdown_rx, ready_tx) {
             tracing::error!(error = %error, "tray loop failed");
         }
     });
@@ -120,12 +126,14 @@ pub fn spawn(config_path: PathBuf, event_tx: UnboundedSender<TrayEvent>) -> Resu
 struct WindowData {
     event_tx: UnboundedSender<TrayEvent>,
     config_path_wide: Vec<u16>,
+    session_stats: Arc<SessionStats>,
     hinstance: HINSTANCE,
 }
 
 fn run_tray_loop(
     config_path: PathBuf,
     event_tx: UnboundedSender<TrayEvent>,
+    session_stats: Arc<SessionStats>,
     shutdown_rx: Receiver<()>,
     ready_tx: Sender<Result<()>>,
 ) -> Result<()> {
@@ -152,6 +160,7 @@ fn run_tray_loop(
     let user_data = Box::new(WindowData {
         event_tx,
         config_path_wide: wide_null(&config_abs),
+        session_stats,
         hinstance,
     });
     let user_data_ptr = Box::into_raw(user_data);
@@ -291,6 +300,13 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
         return;
     }
 
+    let images_value = data.session_stats.images_shown().to_string();
+    let skipped_value = data.session_stats.manual_skips().to_string();
+    let running_value = format_running_duration(data.session_stats.running_duration());
+
+    let images_label = wide_null(&format_stat_row("Images", &images_value));
+    let skipped_label = wide_null(&format_stat_row("Skipped", &skipped_value));
+    let running_label = wide_null(&format_stat_row("Running", &running_value));
     let next_background_label = wide_null("Next Background");
     let settings_label = wide_null("Settings");
     let exit_label = wide_null("Exit");
@@ -310,9 +326,21 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
         EXIT_ICON_FALLBACK_RESOURCE_ID,
     );
 
+    if !insert_disabled_menu_item(menu, 0, images_label.as_ptr()) {
+        tracing::warn!("failed to add Images tray menu item");
+    }
+    if !insert_disabled_menu_item(menu, 1, skipped_label.as_ptr()) {
+        tracing::warn!("failed to add Skipped tray menu item");
+    }
+    if !insert_disabled_menu_item(menu, 2, running_label.as_ptr()) {
+        tracing::warn!("failed to add Running tray menu item");
+    }
+    if !insert_separator_menu_item(menu, 3) {
+        tracing::warn!("failed to add tray stats separator menu item");
+    }
     if !insert_command_menu_item(
         menu,
-        0,
+        4,
         TRAY_COMMAND_NEXT_BACKGROUND,
         next_background_label.as_ptr(),
         next_background_icon,
@@ -321,17 +349,17 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     }
     if !insert_command_menu_item(
         menu,
-        1,
+        5,
         TRAY_COMMAND_SETTINGS,
         settings_label.as_ptr(),
         settings_icon,
     ) {
         tracing::warn!("failed to add Settings tray menu item");
     }
-    if !insert_separator_menu_item(menu, 2) {
+    if !insert_separator_menu_item(menu, 6) {
         tracing::warn!("failed to add separator tray menu item");
     }
-    if !insert_command_menu_item(menu, 3, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
+    if !insert_command_menu_item(menu, 7, TRAY_COMMAND_EXIT, exit_label.as_ptr(), exit_icon) {
         tracing::warn!("failed to add Exit tray menu item");
     }
 
@@ -423,6 +451,20 @@ unsafe fn insert_separator_menu_item(
     menu_item.cbSize = size_of::<MENUITEMINFOW>() as u32;
     menu_item.fMask = MIIM_FTYPE;
     menu_item.fType = MFT_SEPARATOR;
+    InsertMenuItemW(menu, position, 1, &menu_item) != 0
+}
+
+unsafe fn insert_disabled_menu_item(
+    menu: windows_sys::Win32::UI::WindowsAndMessaging::HMENU,
+    position: u32,
+    label: *const u16,
+) -> bool {
+    let mut menu_item: MENUITEMINFOW = std::mem::zeroed();
+    menu_item.cbSize = size_of::<MENUITEMINFOW>() as u32;
+    menu_item.fMask = MIIM_STRING | MIIM_FTYPE | MIIM_STATE;
+    menu_item.fType = MFT_STRING;
+    menu_item.fState = MFS_DISABLED;
+    menu_item.dwTypeData = label as *mut u16;
     InsertMenuItemW(menu, position, 1, &menu_item) != 0
 }
 
@@ -594,6 +636,10 @@ fn load_tray_icon(hinstance: HINSTANCE) -> HICON {
 
 fn make_int_resource(id: u16) -> *const u16 {
     id as usize as *const u16
+}
+
+fn format_stat_row(label: &str, value: &str) -> String {
+    format!("{label}\t{value}")
 }
 
 fn fill_tip(buf: &mut [u16], text: &str) {
