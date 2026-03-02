@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
         _single_instance_guard = match tray::try_acquire_single_instance()? {
             Some(guard) => Some(guard),
             None => {
-                info!("another tray-enabled bgm instance is already running, exiting");
+                info!("another tray-enabled aura instance is already running, exiting");
                 return Ok(());
             }
         };
@@ -148,12 +148,12 @@ async fn main() -> Result<()> {
     }
 
     let mut scheduler = Scheduler::new(config.timer, config.remote_update_timer);
-    info!("bgm is running");
+    info!("aura is running");
 
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("ctrl-c received, stopping bgm");
+                info!("ctrl-c received, stopping aura");
                 if let Some(renderer) = renderer.as_mut() {
                     renderer.stop();
                 }
@@ -354,7 +354,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     Some(TrayEvent::Exit) => {
-                        info!("tray requested exit, stopping bgm");
+                        info!("tray requested exit, stopping aura");
                         if let Some(renderer) = renderer.as_mut() {
                             renderer.stop();
                         }
@@ -362,7 +362,7 @@ async fn main() -> Result<()> {
                         break;
                     }
                     None => {
-                        info!("tray event channel closed, stopping bgm");
+                        info!("tray event channel closed, stopping aura");
                         if let Some(renderer) = renderer.as_mut() {
                             renderer.stop();
                         }
@@ -507,7 +507,7 @@ async fn try_switch_once(
     rotation: &mut RotationManager,
     cache: &CacheManager,
     backend: &dyn wallpaper::WallpaperBackend,
-    config: &config::BgmConfig,
+    config: &config::AuraConfig,
 ) -> Result<Option<String>> {
     if rotation.pool_size() == 0 {
         return Ok(None);
@@ -630,7 +630,7 @@ fn expand_tilde(path: &str) -> Result<PathBuf> {
 
 fn default_user_config_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(".config").join("bgm.hcl"))
+    Ok(home.join(".config").join("aura.hcl"))
 }
 
 fn default_pictures_dir() -> Result<PathBuf> {
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     fn creates_missing_config_with_directory_source() {
         let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join(".config").join("bgm.hcl");
+        let config_path = tmp.path().join(".config").join("aura.hcl");
         let pictures = tmp.path().join("Pictures");
 
         let created = ensure_config_exists_with_pictures(&config_path, &pictures).unwrap();
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn does_not_overwrite_existing_config() {
         let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join(".config").join("bgm.hcl");
+        let config_path = tmp.path().join(".config").join("aura.hcl");
         let pictures = tmp.path().join("Pictures");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(&config_path, "timer = 300\nsources = []\n").unwrap();
@@ -709,7 +709,7 @@ mod tests {
         let options = parse_cli_options(&[]).unwrap();
         assert!(options.tray_enabled);
         assert!(!options.print_version);
-        assert_eq!(options.config_path.file_name().unwrap(), "bgm.hcl");
+        assert_eq!(options.config_path.file_name().unwrap(), "aura.hcl");
     }
 
     #[test]

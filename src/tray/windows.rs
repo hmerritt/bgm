@@ -37,7 +37,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const TRAY_ICON_ID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
-const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\bgm-tray-single-instance";
+const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\aura-tray-single-instance";
 const TRAY_ICON_RESOURCE_ID: u16 = 101;
 const NEXT_BACKGROUND_ICON_RESOURCE_ID: u16 = 203;
 const REFRESH_ICON_RESOURCE_ID: u16 = 204;
@@ -143,7 +143,7 @@ fn run_tray_loop(
     shutdown_rx: Receiver<()>,
     ready_tx: Sender<Result<()>>,
 ) -> Result<()> {
-    let class_name = wide_null("bgm_tray_window");
+    let class_name = wide_null("aura_tray_window");
     let hinstance: HINSTANCE = unsafe { GetModuleHandleW(ptr::null()) };
 
     let wnd_class = WNDCLASSW {
@@ -295,7 +295,7 @@ fn create_notify_icon_data(hwnd: HWND, hinstance: HINSTANCE) -> NOTIFYICONDATAW 
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = load_tray_icon(hinstance);
-    fill_tip(&mut nid.szTip, "bgm");
+    fill_tip(&mut nid.szTip, "aura");
     nid
 }
 

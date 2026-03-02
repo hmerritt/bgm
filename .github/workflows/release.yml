@@ -44,16 +44,16 @@ jobs:
 
       - name: Compress binary with UPX
         if: steps.tag_check.outputs.valid == 'true'
-        run: upx --best --lzma target\release\bgm.exe
+        run: upx --best --lzma target\release\aura.exe
 
       - name: Package artifacts
         if: steps.tag_check.outputs.valid == 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $exeName = "bgm-${{ github.ref_name }}-windows-x86_64.exe"
-          Copy-Item target\release\bgm.exe "dist\$exeName" -Force
-          Compress-Archive -Path "dist\$exeName" -DestinationPath "dist\bgm-${{ github.ref_name }}-windows-x86_64.zip" -Force
+          $exeName = "aura-${{ github.ref_name }}-windows-x86_64.exe"
+          Copy-Item target\release\aura.exe "dist\$exeName" -Force
+          Compress-Archive -Path "dist\$exeName" -DestinationPath "dist\aura-${{ github.ref_name }}-windows-x86_64.zip" -Force
 
       - name: Upload release assets
         if: steps.tag_check.outputs.valid == 'true'
@@ -62,5 +62,5 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            dist/bgm-${{ github.ref_name }}-windows-x86_64.exe
-            dist/bgm-${{ github.ref_name }}-windows-x86_64.zip
+            dist/aura-${{ github.ref_name }}-windows-x86_64.exe
+            dist/aura-${{ github.ref_name }}-windows-x86_64.zip

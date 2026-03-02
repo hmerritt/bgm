@@ -43,7 +43,7 @@ impl ShaderRenderer {
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<EventLoopProxy<UserEvent>>>();
         let thread_config = config.clone();
         let join_handle = thread::Builder::new()
-            .name("bgm-shader-renderer".to_string())
+            .name("aura-shader-renderer".to_string())
             .spawn(move || {
                 run_renderer_thread(thread_config, shader_bytes, event_tx, init_tx);
             })
@@ -164,7 +164,7 @@ impl ApplicationHandler<UserEvent> for RendererApp {
         }
 
         let window_attrs = Window::default_attributes()
-            .with_title("bgm-shader")
+            .with_title("aura-shader")
             .with_decorations(false)
             .with_visible(true)
             .with_resizable(true);

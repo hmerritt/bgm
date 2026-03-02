@@ -27,7 +27,7 @@ impl RssSource {
             .with_context(|| format!("failed to create {}", download_dir.display()))?;
 
         let client = Client::builder()
-            .user_agent("bgm/0.1 (+https://example.invalid)")
+            .user_agent("aura/0.1 (+https://example.invalid)")
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()?;

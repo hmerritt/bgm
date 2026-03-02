@@ -1,10 +1,11 @@
-# Background Image Manager: `bgm`
+# `aura` — Wallpaper Manager
 
-A simple, lightweight, background image manager written in Rust.
+A simple, lightweight, wallpaper manager written in Rust.
 
 ## ⚡ Features
 
 - Small in size, low memory footprint
+- Support for live **_Shaders_** as wallpapers
 - Caches remote images locally for faster switching
 - Automatically re-encodes images for wider format support: `jpeg` | `png` | `bmp` | `gif` | `webp`
 - Tray icon to trigger a new image quickly
@@ -14,9 +15,9 @@ A simple, lightweight, background image manager written in Rust.
     - Directory path
     - RSS feed
 
-## Example `bgm.hcl`
+## Example `aura.hcl`
 
-Default location is `~/.config/bgm.hcl`
+Default location is `~/.config/aura.hcl`
 
 ```hcl
 # Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
@@ -56,7 +57,7 @@ renderer = "image"
 
 ## Development
 
-`bgm` can be developed and tested on Windows, Linux, and macOS. Full wallpaper application and tray behavior are implemented for Windows.
+`aura` can be developed and tested on Windows, Linux, and macOS. Full wallpaper application and tray behavior are implemented for Windows.
 
 ### Prerequisites
 
@@ -78,14 +79,14 @@ cargo test --locked --all-targets
 # Build release binary
 cargo build --release --locked
 
-# Run with default config path (~/.config/bgm.hcl)
+# Run with default config path (~/.config/aura.hcl)
 cargo run --release
 
 # Run without tray mode
 cargo run --release -- --no-tray
 
 # Run with an explicit config path
-cargo run --release -- /path/to/bgm.hcl
+cargo run --release -- /path/to/aura.hcl
 
 # Print version information
 cargo run --release -- --version
@@ -99,8 +100,8 @@ cargo run --release -- --version
 
 ### Default Config Location
 
-- If no config path is provided, `bgm` uses `~/.config/bgm.hcl`.
-- On first run, if the file is missing, `bgm` creates it with recommended defaults.
+- If no config path is provided, `aura` uses `~/.config/aura.hcl`.
+- On first run, if the file is missing, `aura` creates it with recommended defaults.
 - The default source is your Pictures directory.
 
 ### Current Implementation
@@ -111,7 +112,7 @@ cargo run --release -- --version
     - Double-click tray icon: switch to next wallpaper immediately
     - Right-click tray icon: shows stats (`Timer`, `Remote Update`, `Images`, `Shown`, `Skipped`, `Running`) and menu items `Next Background`, `Reload Settings`, `Settings`, and `Exit`
     - `Images` counts unique merged candidates across all sources, and `Shown` counts images applied in the current session
-    - `Next Background` switches immediately, `Reload Settings` reloads `bgm.hcl` into the running process, `Settings` opens the active `bgm.hcl`, and a separator appears above `Exit`
+    - `Next Background` switches immediately, `Reload Settings` reloads `aura.hcl` into the running process, `Settings` opens the active `aura.hcl`, and a separator appears above `Exit`
     - `Running` is minute-precision (`<1m` when under a minute) and shows days once runtime exceeds 72 hours (example: `3d 21h 49m`)
     - Uses embedded tray/menu icons generated from `assets/tray.png`, `assets/menu-next-background.png`, `assets/menu-refresh.png`, `assets/menu-settings.png`, and `assets/menu-exit.png` (menu icons fall back to embedded icon resources if bitmap loading fails)
 - No-repeat shuffle rotation cycle

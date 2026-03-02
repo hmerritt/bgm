@@ -183,7 +183,7 @@ pub enum SourceConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct BgmConfig {
+pub struct AuraConfig {
     pub timer: Duration,
     pub remote_update_timer: Duration,
     pub sources: Vec<SourceConfig>,
@@ -207,22 +207,22 @@ pub struct ShaderConfig {
     pub desktop_scope: ShaderDesktopScope,
 }
 
-pub fn load_from_path(path: &Path) -> Result<BgmConfig> {
+pub fn load_from_path(path: &Path) -> Result<AuraConfig> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read config from {}", path.display()))?;
     parse_from_str(&content, path)
 }
 
-pub fn parse_from_str(content: &str, path: &Path) -> Result<BgmConfig> {
+pub fn parse_from_str(content: &str, path: &Path) -> Result<AuraConfig> {
     let raw: RawConfig =
         hcl::from_str(content).with_context(|| format!("invalid HCL in {}", path.display()))?;
-    BgmConfig::from_raw(raw, path)
+    AuraConfig::from_raw(raw, path)
 }
 
 pub fn default_hcl(pictures_dir: &Path) -> String {
     let pictures = hcl_path(pictures_dir);
     format!(
-        r#"# bgm (Background Manager) configuration file
+        r#"# aura (Background Manager) configuration file
 
 # Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
 # Supported source types: "file" | "directory" | "rss"
@@ -260,12 +260,12 @@ renderer = "image"
     )
 }
 
-impl BgmConfig {
+impl AuraConfig {
     fn from_raw(raw: RawConfig, config_path: &Path) -> Result<Self> {
         let config_parent = config_path.parent().unwrap_or_else(|| Path::new("."));
         let app_dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("bgm");
+            .join("aura");
 
         let timer_secs = parse_duration_field("timer", raw.timer, DEFAULT_TIMER_SECS)?;
         if timer_secs < MIN_TIMER_SECS {
@@ -523,7 +523,7 @@ sources = [
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         assert_eq!(cfg.timer.as_secs(), 15);
         assert_eq!(cfg.remote_update_timer.as_secs(), 600);
         assert_eq!(cfg.sources.len(), 3);
@@ -543,7 +543,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err());
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
     }
 
     #[test]
@@ -555,7 +555,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let raw = default_hcl(&pictures);
         assert!(raw.contains("name = \"gradient_glossy\""));
         assert!(raw.contains("quality = \"medium\""));
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
         assert_eq!(cfg.timer.as_secs(), 10_800);
         assert_eq!(cfg.remote_update_timer.as_secs(), 7_200);
@@ -597,7 +597,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.target_fps, 75);
@@ -623,7 +623,7 @@ shader = {{
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.quality, DEFAULT_SHADER_QUALITY);
@@ -649,7 +649,7 @@ shader = {{
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.quality, ShaderQualityPreset::High);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Primary);
@@ -671,7 +671,7 @@ shader = {{
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err());
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
     }
 
     #[test]
@@ -715,7 +715,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         assert_eq!(cfg.timer.as_secs(), 40);
         assert_eq!(cfg.remote_update_timer.as_secs(), 720);
     }
@@ -735,7 +735,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         assert_eq!(cfg.timer.as_secs(), 10_800);
         assert_eq!(cfg.remote_update_timer.as_secs(), 40);
     }
@@ -763,7 +763,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
                 hcl_path(&dir)
             );
             assert!(
-                parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err(),
+                parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err(),
                 "expected timer={} to fail",
                 timer
             );
@@ -783,7 +783,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&tiny_timer, &tmp.path().join("bgm.hcl")).is_err());
+        assert!(parse_from_str(&tiny_timer, &tmp.path().join("aura.hcl")).is_err());
 
         let tiny_remote = format!(
             r#"
@@ -793,7 +793,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&tiny_remote, &tmp.path().join("bgm.hcl")).is_err());
+        assert!(parse_from_str(&tiny_remote, &tmp.path().join("aura.hcl")).is_err());
     }
 
     #[test]
@@ -812,6 +812,6 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err());
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
     }
 }

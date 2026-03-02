@@ -1,4 +1,4 @@
-use crate::config::{BgmConfig, OutputFormat};
+use crate::config::{AuraConfig, OutputFormat};
 use crate::errors::Result;
 use anyhow::Context;
 use std::fs;
@@ -22,7 +22,7 @@ struct CacheFile {
 }
 
 impl CacheManager {
-    pub fn new(config: &BgmConfig) -> Result<Self> {
+    pub fn new(config: &AuraConfig) -> Result<Self> {
         let processed_dir = config.cache_dir.join("processed");
         let remote_dir = config.cache_dir.join("remote");
 

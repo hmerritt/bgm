@@ -61,7 +61,7 @@ impl WgpuRuntime {
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label: Some("bgm-shader-device"),
+                label: Some("aura-shader-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
             },
@@ -191,12 +191,12 @@ impl WgpuRuntime {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("bgm-shader-encoder"),
+                label: Some("aura-shader-encoder"),
             });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("bgm-shader-pass"),
+                label: Some("aura-shader-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -228,7 +228,7 @@ fn create_pipeline(
 ) -> Result<(wgpu::Buffer, wgpu::BindGroup, wgpu::RenderPipeline)> {
     let shader_words = load_spirv_words(shader_bytes)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("bgm-live-shader"),
+        label: Some("aura-live-shader"),
         source: wgpu::ShaderSource::SpirV(Cow::Owned(shader_words)),
     });
 
@@ -242,13 +242,13 @@ fn create_pipeline(
     };
 
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("bgm-shader-uniform-init"),
+        label: Some("aura-shader-uniform-init"),
         contents: bytemuck::bytes_of(&uniforms),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("bgm-shader-bind-group-layout"),
+        label: Some("aura-shader-bind-group-layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -261,7 +261,7 @@ fn create_pipeline(
         }],
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("bgm-shader-bind-group"),
+        label: Some("aura-shader-bind-group"),
         layout: &bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
@@ -269,13 +269,13 @@ fn create_pipeline(
         }],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("bgm-shader-pipeline-layout"),
+        label: Some("aura-shader-pipeline-layout"),
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("bgm-shader-pipeline"),
+        label: Some("aura-shader-pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,

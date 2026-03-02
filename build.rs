@@ -22,9 +22,9 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/menu-exit.png");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-env-changed=BGM_VERSION_PRERELEASE");
-    println!("cargo:rerun-if-env-changed=BGM_VERSION_METADATA");
-    println!("cargo:rerun-if-env-changed=BGM_BUILD_DATE");
+    println!("cargo:rerun-if-env-changed=AURA_VERSION_PRERELEASE");
+    println!("cargo:rerun-if-env-changed=AURA_VERSION_METADATA");
+    println!("cargo:rerun-if-env-changed=AURA_BUILD_DATE");
 
     emit_version_metadata();
 
@@ -270,7 +270,7 @@ fn generate_windows_resources(manifest_dir: &Path, out_dir: &Path) {
     let generated_exit_ico = out_dir.join("menu-exit.ico");
     generate_menu_icon(&exit_source_png, &generated_exit_ico);
 
-    let generated_rc = out_dir.join("bgm-auto.rc");
+    let generated_rc = out_dir.join("aura-auto.rc");
     let ico_path_for_rc = generated_ico.to_string_lossy().replace('\\', "/");
     let next_background_bmp_path_for_rc = generated_next_background_bmp
         .to_string_lossy()
@@ -370,19 +370,19 @@ fn emit_version_metadata() {
     let git_commit = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_default();
     let git_branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
-    let build_date = std::env::var("BGM_BUILD_DATE")
+    let build_date = std::env::var("AURA_BUILD_DATE")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(current_unix_timestamp);
 
-    let version_prerelease = std::env::var("BGM_VERSION_PRERELEASE").unwrap_or_default();
-    let version_metadata = std::env::var("BGM_VERSION_METADATA").unwrap_or_default();
+    let version_prerelease = std::env::var("AURA_VERSION_PRERELEASE").unwrap_or_default();
+    let version_metadata = std::env::var("AURA_VERSION_METADATA").unwrap_or_default();
 
-    println!("cargo:rustc-env=BGM_GIT_COMMIT={git_commit}");
-    println!("cargo:rustc-env=BGM_GIT_BRANCH={git_branch}");
-    println!("cargo:rustc-env=BGM_BUILD_DATE={build_date}");
-    println!("cargo:rustc-env=BGM_VERSION_PRERELEASE={version_prerelease}");
-    println!("cargo:rustc-env=BGM_VERSION_METADATA={version_metadata}");
+    println!("cargo:rustc-env=AURA_GIT_COMMIT={git_commit}");
+    println!("cargo:rustc-env=AURA_GIT_BRANCH={git_branch}");
+    println!("cargo:rustc-env=AURA_BUILD_DATE={build_date}");
+    println!("cargo:rustc-env=AURA_VERSION_PRERELEASE={version_prerelease}");
+    println!("cargo:rustc-env=AURA_VERSION_METADATA={version_metadata}");
 }
 
 fn run_git(args: &[&str]) -> Option<String> {

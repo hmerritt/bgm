@@ -88,13 +88,13 @@ fn save_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BgmConfig, RendererMode};
+    use crate::config::{AuraConfig, RendererMode};
     use image::{ImageBuffer, Rgba};
     use std::time::Duration;
     use tempfile::tempdir;
 
     fn test_cache_manager(base: &Path) -> CacheManager {
-        let config = BgmConfig {
+        let config = AuraConfig {
             timer: Duration::from_secs(300),
             remote_update_timer: Duration::from_secs(3600),
             sources: Vec::new(),

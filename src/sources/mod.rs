@@ -3,7 +3,7 @@ pub mod rss;
 pub mod single;
 
 use crate::cache::CacheManager;
-use crate::config::{BgmConfig, SourceConfig};
+use crate::config::{AuraConfig, SourceConfig};
 use crate::errors::Result;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -41,7 +41,7 @@ pub trait ImageSource: Send {
 }
 
 pub fn build_sources(
-    config: &BgmConfig,
+    config: &AuraConfig,
     cache: Arc<CacheManager>,
 ) -> Result<Vec<Box<dyn ImageSource>>> {
     let mut sources: Vec<Box<dyn ImageSource>> = Vec::new();

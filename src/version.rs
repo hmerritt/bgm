@@ -1,26 +1,26 @@
-pub const APP_NAME: &str = "bgm";
+pub const APP_NAME: &str = "aura";
 #[allow(dead_code)]
-pub const BINARY_FILENAME: &str = "bgm";
+pub const BINARY_FILENAME: &str = "aura";
 
-const GIT_COMMIT: &str = match option_env!("BGM_GIT_COMMIT") {
+const GIT_COMMIT: &str = match option_env!("AURA_GIT_COMMIT") {
     Some(value) => value,
     None => "",
 };
-const GIT_BRANCH: &str = match option_env!("BGM_GIT_BRANCH") {
+const GIT_BRANCH: &str = match option_env!("AURA_GIT_BRANCH") {
     Some(value) => value,
     None => "",
 };
-const BUILD_DATE: &str = match option_env!("BGM_BUILD_DATE") {
+const BUILD_DATE: &str = match option_env!("AURA_BUILD_DATE") {
     Some(value) => value,
     None => "",
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const VERSION_PRERELEASE: &str = match option_env!("BGM_VERSION_PRERELEASE") {
+const VERSION_PRERELEASE: &str = match option_env!("AURA_VERSION_PRERELEASE") {
     Some(value) => value,
     None => "",
 };
-const VERSION_METADATA: &str = match option_env!("BGM_VERSION_METADATA") {
+const VERSION_METADATA: &str = match option_env!("AURA_VERSION_METADATA") {
     Some(value) => value,
     None => "",
 };
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn full_version_without_revision_block() {
         let info = version_info("feature/foo", "dev", "abc123", "");
-        assert_eq!(info.full_version_number(false), "bgm [Version 1.2.3]");
+        assert_eq!(info.full_version_number(false), "aura [Version 1.2.3]");
     }
 
     #[test]
@@ -125,7 +125,7 @@ mod tests {
         let info = version_info("feature/foo", "dev", "abc123", "");
         assert_eq!(
             info.full_version_number(true),
-            "bgm [Version 1.2.3/feature/foo (abc123)]"
+            "aura [Version 1.2.3/feature/foo (abc123)]"
         );
     }
 
@@ -134,7 +134,7 @@ mod tests {
         let info = version_info("master", "", "abc123", "");
         assert_eq!(
             info.full_version_number(true),
-            "bgm [Version 1.2.3 (abc123)]"
+            "aura [Version 1.2.3 (abc123)]"
         );
     }
 
@@ -143,13 +143,13 @@ mod tests {
         let info = version_info("HEAD", "", "abc123", "");
         assert_eq!(
             info.full_version_number(true),
-            "bgm [Version 1.2.3 (abc123)]"
+            "aura [Version 1.2.3 (abc123)]"
         );
     }
 
     #[test]
     fn full_version_without_git_metadata() {
         let info = version_info("feature/foo", "", "", "");
-        assert_eq!(info.full_version_number(true), "bgm [Version 1.2.3]");
+        assert_eq!(info.full_version_number(true), "aura [Version 1.2.3]");
     }
 }

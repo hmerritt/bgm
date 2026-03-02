@@ -1,5 +1,5 @@
 /target
-/bgm.hcl
+/aura.hcl
 /shaders/**/target
 /shaders/*.spv
 /shaders/**/Cargo.lock
