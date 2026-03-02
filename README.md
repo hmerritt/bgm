@@ -50,6 +50,10 @@ renderer = "image"
 # name = "gradient_glossy"
 # target_fps = 60
 # mouse_enabled = false
+# memory_target_mb = 80
+# power_preference = "low_power" # "low_power" | "high_performance"
+# max_frame_latency = 1 # 1-3 (lower usually uses less memory)
+# desktop_scope = "virtual" # "virtual" | "primary"
 
 ```
 

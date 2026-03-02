@@ -1,6 +1,6 @@
 use super::desktop_windows::{
-    attach_window_to_desktop, place_window_over_virtual_desktop, show_desktop_window,
-    virtual_cursor_position,
+    attach_window_to_desktop, cursor_position_for_scope, place_window_over_desktop,
+    show_desktop_window,
 };
 use super::precompiled;
 use super::wgpu_runtime::WgpuRuntime;
@@ -201,22 +201,34 @@ impl ApplicationHandler<UserEvent> for RendererApp {
             event_loop.exit();
             return;
         }
-        if let Err(error) = place_window_over_virtual_desktop(hwnd) {
-            self.emit_fatal(format!("failed to size render window: {error}"));
+        let desktop_rect = match place_window_over_desktop(hwnd, self.config.desktop_scope) {
+            Ok(rect) => rect,
+            Err(error) => {
+                self.emit_fatal(format!("failed to size render window: {error}"));
+                event_loop.exit();
+                return;
+            }
+        };
+        if desktop_rect.width <= 0 || desktop_rect.height <= 0 {
+            self.emit_fatal("failed to size render window: empty desktop bounds".to_string());
             event_loop.exit();
             return;
         }
         show_desktop_window(hwnd, true);
 
-        let runtime =
-            match WgpuRuntime::new(window.clone(), self.shader_bytes, self.config.mouse_enabled) {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    self.emit_fatal(format!("failed to initialize GPU runtime: {error}"));
-                    event_loop.exit();
-                    return;
-                }
-            };
+        let runtime = match WgpuRuntime::new(
+            window.clone(),
+            self.shader_bytes,
+            self.config.clone(),
+            desktop_rect,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.emit_fatal(format!("failed to initialize GPU runtime: {error}"));
+                event_loop.exit();
+                return;
+            }
+        };
 
         self.window = Some(window);
         self.runtime = Some(runtime);
@@ -245,7 +257,7 @@ impl ApplicationHandler<UserEvent> for RendererApp {
                     return;
                 }
                 let mouse = if self.config.mouse_enabled {
-                    virtual_cursor_position().unwrap_or((0.0, 0.0))
+                    cursor_position_for_scope(self.config.desktop_scope).unwrap_or((0.0, 0.0))
                 } else {
                     (0.0, 0.0)
                 };

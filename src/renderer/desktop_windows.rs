@@ -1,11 +1,13 @@
+use crate::config::ShaderDesktopScope;
 use crate::errors::Result;
 use anyhow::{bail, Context};
 use std::ptr;
 use windows_sys::Win32::Foundation::{GetLastError, SetLastError, BOOL, HWND, LPARAM, POINT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowExW, FindWindowW, GetCursorPos, GetSystemMetrics, SendMessageTimeoutW,
-    SetParent, SetWindowPos, ShowWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+    SetParent, SetWindowPos, ShowWindow, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -43,10 +45,10 @@ pub fn show_desktop_window(hwnd: HWND, visible: bool) {
     }
 }
 
-pub fn place_window_over_virtual_desktop(hwnd: HWND) -> Result<DesktopRect> {
-    let rect = virtual_desktop_rect();
+pub fn place_window_over_desktop(hwnd: HWND, scope: ShaderDesktopScope) -> Result<DesktopRect> {
+    let rect = desktop_rect_for_scope(scope);
     if rect.width <= 0 || rect.height <= 0 {
-        bail!("virtual desktop has invalid bounds");
+        bail!("desktop bounds are invalid for scope {:?}", scope);
     }
 
     unsafe {
@@ -67,6 +69,13 @@ pub fn place_window_over_virtual_desktop(hwnd: HWND) -> Result<DesktopRect> {
     Ok(rect)
 }
 
+pub fn desktop_rect_for_scope(scope: ShaderDesktopScope) -> DesktopRect {
+    match scope {
+        ShaderDesktopScope::Virtual => virtual_desktop_rect(),
+        ShaderDesktopScope::Primary => primary_desktop_rect(),
+    }
+}
+
 pub fn virtual_desktop_rect() -> DesktopRect {
     unsafe {
         DesktopRect {
@@ -78,13 +87,24 @@ pub fn virtual_desktop_rect() -> DesktopRect {
     }
 }
 
-pub fn virtual_cursor_position() -> Option<(f32, f32)> {
+pub fn primary_desktop_rect() -> DesktopRect {
+    unsafe {
+        DesktopRect {
+            x: 0,
+            y: 0,
+            width: GetSystemMetrics(SM_CXSCREEN),
+            height: GetSystemMetrics(SM_CYSCREEN),
+        }
+    }
+}
+
+pub fn cursor_position_for_scope(scope: ShaderDesktopScope) -> Option<(f32, f32)> {
     let mut point: POINT = POINT { x: 0, y: 0 };
     let ok = unsafe { GetCursorPos(&mut point) };
     if ok == 0 {
         return None;
     }
-    let rect = virtual_desktop_rect();
+    let rect = desktop_rect_for_scope(scope);
     Some(((point.x - rect.x) as f32, (point.y - rect.y) as f32))
 }
 
@@ -262,5 +282,25 @@ mod tests {
         };
         let host = choose_desktop_host(candidates, ptr::null_mut());
         assert!(host.is_none());
+    }
+
+    #[test]
+    fn desktop_scope_virtual_uses_virtual_rect() {
+        let from_scope = desktop_rect_for_scope(ShaderDesktopScope::Virtual);
+        let direct = virtual_desktop_rect();
+        assert_eq!(from_scope.x, direct.x);
+        assert_eq!(from_scope.y, direct.y);
+        assert_eq!(from_scope.width, direct.width);
+        assert_eq!(from_scope.height, direct.height);
+    }
+
+    #[test]
+    fn desktop_scope_primary_uses_primary_rect() {
+        let from_scope = desktop_rect_for_scope(ShaderDesktopScope::Primary);
+        let direct = primary_desktop_rect();
+        assert_eq!(from_scope.x, direct.x);
+        assert_eq!(from_scope.y, direct.y);
+        assert_eq!(from_scope.width, direct.width);
+        assert_eq!(from_scope.height, direct.height);
     }
 }

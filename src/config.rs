@@ -13,6 +13,10 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
 const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
 const LEGACY_SHADER_NAME: &str = "gradient_shader";
+const DEFAULT_SHADER_MEMORY_TARGET_MB: u64 = 80;
+const MIN_SHADER_MEMORY_TARGET_MB: u64 = 32;
+const MAX_SHADER_MEMORY_TARGET_MB: u64 = 4096;
+const DEFAULT_SHADER_MAX_FRAME_LATENCY: u8 = 1;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 
@@ -39,11 +43,29 @@ pub enum RendererMode {
     Shader,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShaderPowerPreference {
+    LowPower,
+    HighPerformance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShaderDesktopScope {
+    Virtual,
+    Primary,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawShaderConfig {
     name: Option<String>,
     target_fps: Option<u16>,
     mouse_enabled: Option<bool>,
+    memory_target_mb: Option<u64>,
+    power_preference: Option<ShaderPowerPreference>,
+    max_frame_latency: Option<u8>,
+    desktop_scope: Option<ShaderDesktopScope>,
     #[serde(rename = "crate_path")]
     _crate_path: Option<PathBuf>,
     #[serde(rename = "hot_reload")]
@@ -137,6 +159,10 @@ pub struct ShaderConfig {
     pub name: String,
     pub target_fps: u16,
     pub mouse_enabled: bool,
+    pub memory_target_mb: u64,
+    pub power_preference: ShaderPowerPreference,
+    pub max_frame_latency: u8,
+    pub desktop_scope: ShaderDesktopScope,
 }
 
 pub fn load_from_path(path: &Path) -> Result<BgmConfig> {
@@ -182,8 +208,12 @@ renderer = "image"
 # Shader mode options (used when renderer = "shader")
 #shader = {{
 #	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2"
-#	target_fps = 60
+#	target_fps = 50
 #	mouse_enabled = false
+#	memory_target_mb = 80 # best-effort warning threshold for swapchain memory estimates
+#	power_preference = "low_power" # "low_power" | "high_performance"
+#	max_frame_latency = 1 # 1-3; lower usually reduces memory usage
+#	desktop_scope = "virtual" # "virtual" | "primary"
 #}}
 "#,
         pictures
@@ -269,6 +299,10 @@ fn parse_shader_config(
                 name: DEFAULT_SHADER_NAME.to_string(),
                 target_fps: DEFAULT_SHADER_TARGET_FPS,
                 mouse_enabled: false,
+                memory_target_mb: DEFAULT_SHADER_MEMORY_TARGET_MB,
+                power_preference: ShaderPowerPreference::LowPower,
+                max_frame_latency: DEFAULT_SHADER_MAX_FRAME_LATENCY,
+                desktop_scope: ShaderDesktopScope::Virtual,
             }));
         }
         return Ok(None);
@@ -277,6 +311,20 @@ fn parse_shader_config(
     let target_fps = raw.target_fps.unwrap_or(DEFAULT_SHADER_TARGET_FPS);
     if target_fps == 0 || target_fps > 240 {
         bail!("shader.target_fps must be between 1 and 240");
+    }
+    let memory_target_mb = raw
+        .memory_target_mb
+        .unwrap_or(DEFAULT_SHADER_MEMORY_TARGET_MB);
+    if !(MIN_SHADER_MEMORY_TARGET_MB..=MAX_SHADER_MEMORY_TARGET_MB).contains(&memory_target_mb) {
+        bail!(
+            "shader.memory_target_mb must be between {MIN_SHADER_MEMORY_TARGET_MB} and {MAX_SHADER_MEMORY_TARGET_MB}"
+        );
+    }
+    let max_frame_latency = raw
+        .max_frame_latency
+        .unwrap_or(DEFAULT_SHADER_MAX_FRAME_LATENCY);
+    if !(1..=3).contains(&max_frame_latency) {
+        bail!("shader.max_frame_latency must be between 1 and 3");
     }
 
     let name = raw
@@ -298,6 +346,12 @@ fn parse_shader_config(
         name,
         target_fps,
         mouse_enabled: raw.mouse_enabled.unwrap_or(false),
+        memory_target_mb,
+        power_preference: raw
+            .power_preference
+            .unwrap_or(ShaderPowerPreference::LowPower),
+        max_frame_latency,
+        desktop_scope: raw.desktop_scope.unwrap_or(ShaderDesktopScope::Virtual),
     }))
 }
 
@@ -481,6 +535,7 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 
         let raw = default_hcl(&pictures);
         assert!(raw.contains("name = \"gradient_glossy\""));
+        assert!(raw.contains("memory_target_mb = 80"));
         let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
         assert_eq!(cfg.timer.as_secs(), 10_800);
@@ -525,6 +580,10 @@ shader = {{
         assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.target_fps, 75);
         assert!(shader.mouse_enabled);
+        assert_eq!(shader.memory_target_mb, DEFAULT_SHADER_MEMORY_TARGET_MB);
+        assert_eq!(shader.power_preference, ShaderPowerPreference::LowPower);
+        assert_eq!(shader.max_frame_latency, DEFAULT_SHADER_MAX_FRAME_LATENCY);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
     }
 
     #[test]
@@ -547,6 +606,73 @@ shader = {{
         let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
+        assert_eq!(shader.memory_target_mb, DEFAULT_SHADER_MEMORY_TARGET_MB);
+        assert_eq!(shader.power_preference, ShaderPowerPreference::LowPower);
+        assert_eq!(shader.max_frame_latency, DEFAULT_SHADER_MAX_FRAME_LATENCY);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
+    }
+
+    #[test]
+    fn parses_shader_memory_and_desktop_options() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  name = "gradient_glossy"
+  memory_target_mb = 160
+  power_preference = "high_performance"
+  max_frame_latency = 3
+  desktop_scope = "primary"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.memory_target_mb, 160);
+        assert_eq!(
+            shader.power_preference,
+            ShaderPowerPreference::HighPerformance
+        );
+        assert_eq!(shader.max_frame_latency, 3);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Primary);
+    }
+
+    #[test]
+    fn rejects_invalid_shader_memory_options() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        for snippet in [
+            "memory_target_mb = 1",
+            "memory_target_mb = 5000",
+            "max_frame_latency = 0",
+            "max_frame_latency = 4",
+        ] {
+            let raw = format!(
+                r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  {}
+}}
+"#,
+                hcl_path(&dir),
+                snippet
+            );
+            assert!(
+                parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err(),
+                "expected shader option snippet to fail: {}",
+                snippet
+            );
+        }
     }
 
     #[test]

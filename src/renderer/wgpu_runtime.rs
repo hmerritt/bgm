@@ -1,3 +1,5 @@
+use super::desktop_windows::DesktopRect;
+use crate::config::{ShaderConfig, ShaderPowerPreference};
 use crate::errors::Result;
 use anyhow::{anyhow, bail, Context};
 use bytemuck::{Pod, Zeroable};
@@ -34,14 +36,23 @@ pub struct WgpuRuntime {
 }
 
 impl WgpuRuntime {
-    pub fn new(window: Arc<Window>, shader_bytes: &[u8], mouse_enabled: bool) -> Result<Self> {
+    pub fn new(
+        window: Arc<Window>,
+        shader_bytes: &[u8],
+        shader_config: ShaderConfig,
+        desktop_rect: DesktopRect,
+    ) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = instance
             .create_surface(window.clone())
             .map_err(|error| anyhow!("failed to create wgpu surface: {error}"))?;
 
+        let power_preference = match shader_config.power_preference {
+            ShaderPowerPreference::LowPower => wgpu::PowerPreference::LowPower,
+            ShaderPowerPreference::HighPerformance => wgpu::PowerPreference::HighPerformance,
+        };
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference,
             force_fallback_adapter: false,
             compatible_surface: Some(&surface),
         }))
@@ -73,24 +84,47 @@ impl WgpuRuntime {
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
 
-        let size = window.inner_size();
+        let width = desktop_rect.width.max(1) as u32;
+        let height = desktop_rect.height.max(1) as u32;
         let mut config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width,
+            height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: u32::from(shader_config.max_frame_latency),
         };
+
+        let estimated_bytes =
+            estimate_swapchain_memory_bytes(width, height, shader_config.max_frame_latency);
+        let estimated_mb = bytes_to_megabytes(estimated_bytes);
+        tracing::info!(
+            width,
+            height,
+            desktop_scope = ?shader_config.desktop_scope,
+            power_preference = ?shader_config.power_preference,
+            max_frame_latency = shader_config.max_frame_latency,
+            memory_target_mb = shader_config.memory_target_mb,
+            estimated_swapchain_mb = estimated_mb,
+            "shader runtime surface memory estimate"
+        );
+        if estimated_mb > shader_config.memory_target_mb as f64 {
+            tracing::warn!(
+                memory_target_mb = shader_config.memory_target_mb,
+                estimated_swapchain_mb = estimated_mb,
+                "shader swapchain estimate exceeds memory target; continuing shader mode"
+            );
+        }
+
         surface.configure(&device, &config);
 
         let (uniform_buffer, bind_group, pipeline) =
-            create_pipeline(&device, &config, shader_bytes, mouse_enabled)?;
+            create_pipeline(&device, &config, shader_bytes, shader_config.mouse_enabled)?;
 
-        config.width = size.width.max(1);
-        config.height = size.height.max(1);
+        config.width = width;
+        config.height = height;
 
         Ok(Self {
             _instance: instance,
@@ -103,7 +137,7 @@ impl WgpuRuntime {
             uniform_buffer,
             started_at: Instant::now(),
             frame_index: 0,
-            mouse_enabled,
+            mouse_enabled: shader_config.mouse_enabled,
         })
     }
 
@@ -283,4 +317,30 @@ fn load_spirv_words(bytes: &[u8]) -> Result<Vec<u32>> {
         words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(words)
+}
+
+fn estimate_swapchain_memory_bytes(width: u32, height: u32, max_frame_latency: u8) -> u64 {
+    let bytes_per_frame = u64::from(width) * u64::from(height) * 4;
+    bytes_per_frame * (u64::from(max_frame_latency) + 1)
+}
+
+fn bytes_to_megabytes(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimates_swapchain_memory_from_resolution_and_latency() {
+        let bytes = estimate_swapchain_memory_bytes(3840, 2160, 1);
+        assert_eq!(bytes, 66_355_200);
+    }
+
+    #[test]
+    fn converts_bytes_to_megabytes() {
+        let mb = bytes_to_megabytes(83_886_080);
+        assert!((mb - 80.0).abs() < f64::EPSILON);
+    }
 }
