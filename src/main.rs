@@ -3,6 +3,7 @@ mod config;
 mod errors;
 mod image_pipeline;
 mod logging;
+mod renderer;
 mod rotation;
 mod scheduler;
 mod sources;
@@ -12,8 +13,9 @@ mod version;
 mod wallpaper;
 
 use crate::cache::CacheManager;
-use crate::config::load_from_path;
+use crate::config::{load_from_path, RendererMode};
 use crate::errors::Result;
+use crate::renderer::{RendererCommand, RendererEvent, ShaderRenderer};
 use crate::rotation::RotationManager;
 use crate::scheduler::{Scheduler, SchedulerEvent};
 use crate::sources::{build_sources, ImageCandidate, ImageSource, Origin, SourceKind};
@@ -26,6 +28,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveMode {
+    Image,
+    Shader,
+}
 
 #[derive(Debug)]
 struct CliOptions {
@@ -103,13 +111,40 @@ async fn main() -> Result<()> {
         info!("tray mode enabled");
     }
 
+    let mut renderer: Option<ShaderRenderer> = None;
+    let mut renderer_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<RendererEvent>> = None;
+    let mut active_mode = ActiveMode::Image;
+    if config.renderer == RendererMode::Shader {
+        if let Some(shader_config) = config.shader.clone() {
+            match ShaderRenderer::start(shader_config) {
+                Ok(mut shader_renderer) => {
+                    renderer_event_rx = shader_renderer.take_event_receiver();
+                    renderer = Some(shader_renderer);
+                    active_mode = ActiveMode::Shader;
+                    info!("shader renderer started");
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "shader renderer startup failed, falling back to image mode"
+                    );
+                }
+            }
+        } else {
+            warn!("renderer is set to shader but shader config is missing, using image mode");
+        }
+    }
+    session_stats.set_shader_active(active_mode == ActiveMode::Shader);
+
     let mut last_image_id = persisted_state.last_image_id.clone();
-    if let Some(next_id) =
-        try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await?
-    {
-        session_stats.inc_images_shown();
-        last_image_id = Some(next_id);
-        persist_state(&state_store, &rotation, last_image_id.clone())?;
+    if active_mode == ActiveMode::Image {
+        if let Some(next_id) =
+            try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await?
+        {
+            session_stats.inc_images_shown();
+            last_image_id = Some(next_id);
+            persist_state(&state_store, &rotation, last_image_id.clone())?;
+        }
     }
 
     let mut scheduler = Scheduler::new(config.timer, config.remote_update_timer);
@@ -119,12 +154,56 @@ async fn main() -> Result<()> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("ctrl-c received, stopping bgm");
+                if let Some(renderer) = renderer.as_mut() {
+                    renderer.stop();
+                }
                 persist_state(&state_store, &rotation, last_image_id.clone())?;
                 break;
+            }
+            renderer_event = async {
+                if let Some(receiver) = renderer_event_rx.as_mut() {
+                    receiver.recv().await
+                } else {
+                    std::future::pending::<Option<RendererEvent>>().await
+                }
+            } => {
+                if let Some(renderer_event) = renderer_event {
+                    match renderer_event {
+                        RendererEvent::Ready => info!("shader renderer ready"),
+                        RendererEvent::Running => info!("shader renderer running"),
+                        RendererEvent::Paused => info!("shader renderer paused"),
+                        RendererEvent::Stopped => info!("shader renderer stopped"),
+                        RendererEvent::Fatal { message } => {
+                            warn!(error = %message, "shader renderer failed, switching to image mode");
+                            if let Some(renderer) = renderer.as_mut() {
+                                renderer.stop();
+                            }
+                            renderer = None;
+                            renderer_event_rx = None;
+                            active_mode = ActiveMode::Image;
+                            session_stats.set_shader_active(false);
+                            match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
+                                Ok(Some(next_id)) => {
+                                    session_stats.inc_images_shown();
+                                    last_image_id = Some(next_id);
+                                    if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
+                                        warn!(error = %error, "failed to persist state after shader fallback");
+                                    }
+                                }
+                                Ok(None) => warn!("shader fallback requested image mode but no image was available"),
+                                Err(error) => warn!(error = %error, "failed to apply image mode fallback"),
+                            }
+                        }
+                    }
+                }
             }
             tray_event = tray_event_rx.recv() => {
                 match tray_event {
                     Some(TrayEvent::NextWallpaper) => {
+                        if active_mode != ActiveMode::Image {
+                            warn!("Next Background ignored while shader mode is active");
+                            continue;
+                        }
                         match refresh_local_sources(&mut sources).await {
                             Ok(updated) => {
                                 let (next_local_count, _) = count_images_by_origin(&updated);
@@ -208,6 +287,41 @@ async fn main() -> Result<()> {
                         ));
                         logging::set_level(&config.log_level);
 
+                        if let Some(renderer) = renderer.as_mut() {
+                            renderer.stop();
+                        }
+                        renderer = None;
+                        renderer_event_rx = None;
+                        active_mode = ActiveMode::Image;
+                        session_stats.set_shader_active(false);
+                        if config.renderer == RendererMode::Shader {
+                            if let Some(shader_config) = config.shader.clone() {
+                                match ShaderRenderer::start(shader_config) {
+                                    Ok(mut new_renderer) => {
+                                        renderer_event_rx = new_renderer.take_event_receiver();
+                                        renderer = Some(new_renderer);
+                                        active_mode = ActiveMode::Shader;
+                                        session_stats.set_shader_active(true);
+                                        info!("settings reload switched runtime to shader mode");
+                                    }
+                                    Err(error) => {
+                                        warn!(error = %error, "failed to restart shader mode from reloaded settings");
+                                    }
+                                }
+                            }
+                        }
+
+                        if active_mode == ActiveMode::Image {
+                            match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
+                                Ok(Some(next_id)) => {
+                                    session_stats.inc_images_shown();
+                                    last_image_id = Some(next_id);
+                                }
+                                Ok(None) => warn!("settings reload kept image mode but no image was available"),
+                                Err(error) => warn!(error = %error, "failed to apply wallpaper after settings reload"),
+                            }
+                        }
+
                         if let Err(error) =
                             persist_state(&state_store, &rotation, last_image_id.clone())
                         {
@@ -215,13 +329,43 @@ async fn main() -> Result<()> {
                         }
                         info!("settings reload complete");
                     }
+                    Some(TrayEvent::FallbackToImage) => {
+                        if let Some(renderer) = renderer.as_ref() {
+                            let _ = renderer.send_command(RendererCommand::DisableOutput);
+                        }
+                        if let Some(renderer) = renderer.as_mut() {
+                            renderer.stop();
+                        }
+                        renderer = None;
+                        renderer_event_rx = None;
+                        active_mode = ActiveMode::Image;
+                        session_stats.set_shader_active(false);
+
+                        match try_switch_once(&mut rotation, cache.as_ref(), &*backend, &config).await {
+                            Ok(Some(next_id)) => {
+                                session_stats.inc_images_shown();
+                                last_image_id = Some(next_id);
+                                if let Err(error) = persist_state(&state_store, &rotation, last_image_id.clone()) {
+                                    warn!(error = %error, "failed to persist state after tray fallback to image");
+                                }
+                            }
+                            Ok(None) => warn!("tray requested image fallback but no image was available"),
+                            Err(error) => warn!(error = %error, "tray fallback to image failed"),
+                        }
+                    }
                     Some(TrayEvent::Exit) => {
                         info!("tray requested exit, stopping bgm");
+                        if let Some(renderer) = renderer.as_mut() {
+                            renderer.stop();
+                        }
                         persist_state(&state_store, &rotation, last_image_id.clone())?;
                         break;
                     }
                     None => {
                         info!("tray event channel closed, stopping bgm");
+                        if let Some(renderer) = renderer.as_mut() {
+                            renderer.stop();
+                        }
                         persist_state(&state_store, &rotation, last_image_id.clone())?;
                         break;
                     }
@@ -230,6 +374,9 @@ async fn main() -> Result<()> {
             event = scheduler.next_event() => {
                 match event {
                     SchedulerEvent::SwitchImage => {
+                        if active_mode != ActiveMode::Image {
+                            continue;
+                        }
                         match refresh_local_sources(&mut sources).await {
                             Ok(updated) => {
                                 let (next_local_count, _) = count_images_by_origin(&updated);

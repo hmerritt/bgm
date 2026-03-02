@@ -8,6 +8,7 @@ A simple, lightweight, background image manager written in Rust.
 - Caches remote images locally for faster switching
 - Automatically re-encodes images for wider format support: `jpeg` | `png` | `bmp` | `gif` | `webp`
 - Tray icon to trigger a new image quickly
+- Optional live shader renderer mode (Windows)
 - Multiple image `sources` can be added
     - Single image path
     - Directory path
@@ -39,6 +40,18 @@ remoteUpdateTimer = "1h"
 
 # Log level: "error" | "warn" | "info" | "debug" | "trace"
 log_level = "info"
+
+# Runtime renderer mode: "image" | "shader"
+renderer = "image"
+
+# Shader mode options (used when renderer = "shader")
+# Available shader names: "gradient_glossy", "limestone_cave", "dither_asci_1", "dither_asci_2"
+# [shader]
+# name = "gradient_glossy"
+# target_fps = 60
+# mouse_enabled = false
+# quality = "medium" # "vlow" | "low" | "medium" | "high"
+# desktop_scope = "virtual" # "virtual" | "primary"
 
 ```
 
@@ -82,6 +95,7 @@ cargo run --release -- --version
 ### Platform Notes
 
 - Windows: tray and wallpaper update flow are supported.
+- Windows shader mode: shaders are compiled at build time from `shaders/*` (excluding `shader_builder`) using rust-gpu.
 - Linux/macOS: check/test/build are supported for development; wallpaper apply is currently unsupported at runtime.
 
 ### Default Config Location

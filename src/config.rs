@@ -10,6 +10,10 @@ const DEFAULT_REMOTE_UPDATE_TIMER_SECS: u64 = 3600;
 const MIN_TIMER_SECS: u64 = 5;
 const MIN_REMOTE_UPDATE_SECS: u64 = 30;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
+const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
+const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
+const LEGACY_SHADER_NAME: &str = "gradient_shader";
+const DEFAULT_SHADER_QUALITY: ShaderQualityPreset = ShaderQualityPreset::Medium;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 
@@ -27,6 +31,91 @@ impl OutputFormat {
             Self::Png => "png",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RendererMode {
+    Image,
+    Shader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShaderPowerPreference {
+    LowPower,
+    HighPerformance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShaderDesktopScope {
+    Virtual,
+    Primary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShaderQualityPreset {
+    Vlow,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderQualitySettings {
+    pub memory_target_mb: u64,
+    pub power_preference: ShaderPowerPreference,
+    pub max_frame_latency: u8,
+}
+
+impl ShaderQualityPreset {
+    pub fn settings(self) -> ShaderQualitySettings {
+        match self {
+            Self::Vlow => ShaderQualitySettings {
+                memory_target_mb: 48,
+                power_preference: ShaderPowerPreference::LowPower,
+                max_frame_latency: 1,
+            },
+            Self::Low => ShaderQualitySettings {
+                memory_target_mb: 80,
+                power_preference: ShaderPowerPreference::LowPower,
+                max_frame_latency: 1,
+            },
+            Self::Medium => ShaderQualitySettings {
+                memory_target_mb: 100,
+                power_preference: ShaderPowerPreference::LowPower,
+                max_frame_latency: 2,
+            },
+            Self::High => ShaderQualitySettings {
+                memory_target_mb: 150,
+                power_preference: ShaderPowerPreference::HighPerformance,
+                max_frame_latency: 3,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawShaderConfig {
+    name: Option<String>,
+    target_fps: Option<u16>,
+    mouse_enabled: Option<bool>,
+    quality: Option<ShaderQualityPreset>,
+    desktop_scope: Option<ShaderDesktopScope>,
+    #[serde(rename = "memory_target_mb")]
+    _memory_target_mb: Option<hcl::Value>,
+    #[serde(rename = "power_preference")]
+    _power_preference: Option<hcl::Value>,
+    #[serde(rename = "max_frame_latency")]
+    _max_frame_latency: Option<hcl::Value>,
+    #[serde(rename = "crate_path")]
+    _crate_path: Option<PathBuf>,
+    #[serde(rename = "hot_reload")]
+    _hot_reload: Option<bool>,
+    #[serde(rename = "reload_debounce_ms")]
+    _reload_debounce_ms: Option<u64>,
 }
 
 fn default_recursive() -> bool {
@@ -72,6 +161,8 @@ struct RawConfig {
     jpeg_quality: Option<u8>,
     max_cache_mb: Option<u64>,
     max_cache_age_days: Option<u64>,
+    renderer: Option<RendererMode>,
+    shader: Option<RawShaderConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +194,17 @@ pub struct BgmConfig {
     pub jpeg_quality: u8,
     pub max_cache_bytes: u64,
     pub max_cache_age: Duration,
+    pub renderer: RendererMode,
+    pub shader: Option<ShaderConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShaderConfig {
+    pub name: String,
+    pub target_fps: u16,
+    pub mouse_enabled: bool,
+    pub quality: ShaderQualityPreset,
+    pub desktop_scope: ShaderDesktopScope,
 }
 
 pub fn load_from_path(path: &Path) -> Result<BgmConfig> {
@@ -141,6 +243,18 @@ remoteUpdateTimer = "2h"
 
 # Log level: "error" | "warn" | "info" | "debug" | "trace"
 log_level = "warn"
+
+# Runtime renderer mode: "image" | "shader"
+renderer = "image"
+
+# Shader mode options (used when renderer = "shader")
+#shader = {{
+#	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2"
+#	target_fps = 50
+#	mouse_enabled = false
+#	quality = "medium" # "vlow" | "low" | "medium" | "high"
+#	desktop_scope = "virtual" # "virtual" | "primary"
+#}}
 "#,
         pictures
     )
@@ -195,6 +309,8 @@ impl BgmConfig {
         let max_cache_age = Duration::from_secs(
             raw.max_cache_age_days.unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS) * 24 * 60 * 60,
         );
+        let renderer = raw.renderer.unwrap_or(RendererMode::Image);
+        let shader = parse_shader_config(raw.shader, renderer)?;
 
         Ok(Self {
             timer: Duration::from_secs(timer_secs),
@@ -207,8 +323,55 @@ impl BgmConfig {
             jpeg_quality,
             max_cache_bytes,
             max_cache_age,
+            renderer,
+            shader,
         })
     }
+}
+
+fn parse_shader_config(
+    raw: Option<RawShaderConfig>,
+    renderer: RendererMode,
+) -> Result<Option<ShaderConfig>> {
+    let Some(raw) = raw else {
+        if renderer == RendererMode::Shader {
+            return Ok(Some(ShaderConfig {
+                name: DEFAULT_SHADER_NAME.to_string(),
+                target_fps: DEFAULT_SHADER_TARGET_FPS,
+                mouse_enabled: false,
+                quality: DEFAULT_SHADER_QUALITY,
+                desktop_scope: ShaderDesktopScope::Virtual,
+            }));
+        }
+        return Ok(None);
+    };
+
+    let target_fps = raw.target_fps.unwrap_or(DEFAULT_SHADER_TARGET_FPS);
+    if target_fps == 0 || target_fps > 240 {
+        bail!("shader.target_fps must be between 1 and 240");
+    }
+    let name = raw
+        .name
+        .as_deref()
+        .unwrap_or(DEFAULT_SHADER_NAME)
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        bail!("shader.name must not be empty");
+    }
+    let name = if name == LEGACY_SHADER_NAME {
+        DEFAULT_SHADER_NAME.to_string()
+    } else {
+        name
+    };
+
+    Ok(Some(ShaderConfig {
+        name,
+        target_fps,
+        mouse_enabled: raw.mouse_enabled.unwrap_or(false),
+        quality: raw.quality.unwrap_or(DEFAULT_SHADER_QUALITY),
+        desktop_scope: raw.desktop_scope.unwrap_or(ShaderDesktopScope::Virtual),
+    }))
 }
 
 fn parse_duration_field(
@@ -255,15 +418,11 @@ fn parse_duration_string(field_name: &str, raw: &str) -> Result<u64> {
     }
 
     let value = number_str.parse::<u64>().with_context(|| {
-        format!(
-            "{field_name} must contain a valid integer before its unit; got \"{number_str}\""
-        )
+        format!("{field_name} must contain a valid integer before its unit; got \"{number_str}\"")
     })?;
 
     value.checked_mul(multiplier).with_context(|| {
-        format!(
-            "{field_name} duration is too large to represent in seconds: \"{trimmed}\""
-        )
+        format!("{field_name} duration is too large to represent in seconds: \"{trimmed}\"")
     })
 }
 
@@ -394,6 +553,8 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         fs::create_dir_all(&pictures).unwrap();
 
         let raw = default_hcl(&pictures);
+        assert!(raw.contains("name = \"gradient_glossy\""));
+        assert!(raw.contains("quality = \"medium\""));
         let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
         assert_eq!(cfg.timer.as_secs(), 10_800);
@@ -409,6 +570,134 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             }
             _ => panic!("expected directory source in generated config"),
         }
+    }
+
+    #[test]
+    fn deprecated_shader_fields_are_ignored() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+        shader = {{
+  name = "gradient_glossy"
+  memory_target_mb = 9999
+  power_preference = "not_a_real_mode"
+  max_frame_latency = 99
+  crate_path = "shaders/legacy"
+  hot_reload = true
+  reload_debounce_ms = 500
+  target_fps = 75
+  mouse_enabled = true
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.name, "gradient_glossy");
+        assert_eq!(shader.target_fps, 75);
+        assert!(shader.mouse_enabled);
+        assert_eq!(shader.quality, DEFAULT_SHADER_QUALITY);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
+    }
+
+    #[test]
+    fn legacy_shader_name_alias_maps_to_gradient_glossy() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  name = "gradient_shader"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.name, "gradient_glossy");
+        assert_eq!(shader.quality, DEFAULT_SHADER_QUALITY);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
+    }
+
+    #[test]
+    fn parses_shader_quality_and_desktop_scope() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  name = "gradient_glossy"
+  quality = "high"
+  desktop_scope = "primary"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("bgm.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.quality, ShaderQualityPreset::High);
+        assert_eq!(shader.desktop_scope, ShaderDesktopScope::Primary);
+    }
+
+    #[test]
+    fn rejects_invalid_shader_quality_options() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+sources = [ {{ type = "directory", path = "{}" }} ]
+shader = {{
+  quality = "ultra"
+}}
+"#,
+            hcl_path(&dir)
+        );
+        assert!(parse_from_str(&raw, &tmp.path().join("bgm.hcl")).is_err());
+    }
+
+    #[test]
+    fn shader_quality_settings_match_expected_values() {
+        let vlow = ShaderQualityPreset::Vlow.settings();
+        assert_eq!(vlow.memory_target_mb, 48);
+        assert_eq!(vlow.power_preference, ShaderPowerPreference::LowPower);
+        assert_eq!(vlow.max_frame_latency, 1);
+
+        let low = ShaderQualityPreset::Low.settings();
+        assert_eq!(low.memory_target_mb, 80);
+        assert_eq!(low.power_preference, ShaderPowerPreference::LowPower);
+        assert_eq!(low.max_frame_latency, 1);
+
+        let medium = ShaderQualityPreset::Medium.settings();
+        assert_eq!(medium.memory_target_mb, 100);
+        assert_eq!(medium.power_preference, ShaderPowerPreference::LowPower);
+        assert_eq!(medium.max_frame_latency, 2);
+
+        let high = ShaderQualityPreset::High.settings();
+        assert_eq!(high.memory_target_mb, 150);
+        assert_eq!(
+            high.power_preference,
+            ShaderPowerPreference::HighPerformance
+        );
+        assert_eq!(high.max_frame_latency, 3);
     }
 
     #[test]
@@ -457,7 +746,14 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
 
-        for timer in ["\"40\"", "\"1d\"", "\"abc\"", "\"-5m\"", "\"1.5h\"", "\"1h30m\""] {
+        for timer in [
+            "\"40\"",
+            "\"1d\"",
+            "\"abc\"",
+            "\"-5m\"",
+            "\"1.5h\"",
+            "\"1h30m\"",
+        ] {
             let raw = format!(
                 r#"
 timer = {}
