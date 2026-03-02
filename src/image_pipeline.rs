@@ -37,12 +37,7 @@ pub fn prepare_for_output(
 fn build_cache_key(input: &Path, format: OutputFormat, jpeg_quality: u8) -> Result<String> {
     let bytes = fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
     let source_hash = blake3::hash(&bytes).to_hex();
-    let key = format!(
-        "{}:{}:{}",
-        source_hash,
-        format.extension(),
-        jpeg_quality
-    );
+    let key = format!("{}:{}:{}", source_hash, format.extension(), jpeg_quality);
     Ok(blake3::hash(key.as_bytes()).to_hex().to_string())
 }
 
@@ -93,7 +88,7 @@ fn save_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BgmConfig;
+    use crate::config::{BgmConfig, RendererMode};
     use image::{ImageBuffer, Rgba};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -110,6 +105,8 @@ mod tests {
             jpeg_quality: 90,
             max_cache_bytes: 1024 * 1024,
             max_cache_age: Duration::from_secs(24 * 60 * 60),
+            renderer: RendererMode::Image,
+            shader: None,
         };
         CacheManager::new(&config).unwrap()
     }

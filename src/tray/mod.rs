@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 pub enum TrayEvent {
     NextWallpaper,
     ReloadSettings,
+    ReloadShader,
+    ToggleShaderPause,
+    FallbackToImage,
     Exit,
 }
 
@@ -191,8 +194,14 @@ mod tests {
     #[test]
     fn format_running_duration_handles_minutes_and_hours() {
         assert_eq!(format_running_duration(Duration::from_secs(60)), "1m");
-        assert_eq!(format_running_duration(Duration::from_secs(59 * 60 + 59)), "59m");
-        assert_eq!(format_running_duration(Duration::from_secs(60 * 60)), "1h 0m");
+        assert_eq!(
+            format_running_duration(Duration::from_secs(59 * 60 + 59)),
+            "59m"
+        );
+        assert_eq!(
+            format_running_duration(Duration::from_secs(60 * 60)),
+            "1h 0m"
+        );
         assert_eq!(
             format_running_duration(Duration::from_secs((90 * 60) as u64)),
             "1h 30m"
@@ -246,7 +255,10 @@ mod tests {
     fn format_config_duration_formats_expected_shapes() {
         assert_eq!(format_config_duration(Duration::from_secs(40)), "40s");
         assert_eq!(format_config_duration(Duration::from_secs(12 * 60)), "12m");
-        assert_eq!(format_config_duration(Duration::from_secs(3 * 60 * 60)), "3h");
+        assert_eq!(
+            format_config_duration(Duration::from_secs(3 * 60 * 60)),
+            "3h"
+        );
         assert_eq!(
             format_config_duration(Duration::from_secs(90 * 60)),
             "1h 30m"

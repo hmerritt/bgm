@@ -10,6 +10,9 @@ const DEFAULT_REMOTE_UPDATE_TIMER_SECS: u64 = 3600;
 const MIN_TIMER_SECS: u64 = 5;
 const MIN_REMOTE_UPDATE_SECS: u64 = 30;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
+const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
+const DEFAULT_SHADER_RELOAD_DEBOUNCE_MS: u64 = 300;
+const MIN_SHADER_RELOAD_DEBOUNCE_MS: u64 = 50;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 
@@ -27,6 +30,22 @@ impl OutputFormat {
             Self::Png => "png",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RendererMode {
+    Image,
+    Shader,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawShaderConfig {
+    crate_path: Option<PathBuf>,
+    target_fps: Option<u16>,
+    hot_reload: Option<bool>,
+    reload_debounce_ms: Option<u64>,
+    mouse_enabled: Option<bool>,
 }
 
 fn default_recursive() -> bool {
@@ -72,6 +91,8 @@ struct RawConfig {
     jpeg_quality: Option<u8>,
     max_cache_mb: Option<u64>,
     max_cache_age_days: Option<u64>,
+    renderer: Option<RendererMode>,
+    shader: Option<RawShaderConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +124,17 @@ pub struct BgmConfig {
     pub jpeg_quality: u8,
     pub max_cache_bytes: u64,
     pub max_cache_age: Duration,
+    pub renderer: RendererMode,
+    pub shader: Option<ShaderConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShaderConfig {
+    pub crate_path: PathBuf,
+    pub target_fps: u16,
+    pub hot_reload: bool,
+    pub reload_debounce: Duration,
+    pub mouse_enabled: bool,
 }
 
 pub fn load_from_path(path: &Path) -> Result<BgmConfig> {
@@ -141,6 +173,17 @@ remoteUpdateTimer = "2h"
 
 # Log level: "error" | "warn" | "info" | "debug" | "trace"
 log_level = "warn"
+
+# Runtime renderer mode: "image" | "shader"
+renderer = "image"
+
+# Shader mode options (used when renderer = "shader")
+# [shader]
+# crate_path = "shaders/live_bg_shader"
+# target_fps = 60
+# hot_reload = true
+# reload_debounce_ms = 300
+# mouse_enabled = false
 "#,
         pictures
     )
@@ -195,6 +238,8 @@ impl BgmConfig {
         let max_cache_age = Duration::from_secs(
             raw.max_cache_age_days.unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS) * 24 * 60 * 60,
         );
+        let renderer = raw.renderer.unwrap_or(RendererMode::Image);
+        let shader = parse_shader_config(raw.shader, renderer, config_parent)?;
 
         Ok(Self {
             timer: Duration::from_secs(timer_secs),
@@ -207,8 +252,70 @@ impl BgmConfig {
             jpeg_quality,
             max_cache_bytes,
             max_cache_age,
+            renderer,
+            shader,
         })
     }
+}
+
+fn parse_shader_config(
+    raw: Option<RawShaderConfig>,
+    renderer: RendererMode,
+    config_parent: &Path,
+) -> Result<Option<ShaderConfig>> {
+    let Some(raw) = raw else {
+        if renderer == RendererMode::Shader {
+            let crate_path = resolve_path(PathBuf::from("shaders/live_bg_shader"), config_parent);
+            if !crate_path.exists() || !crate_path.is_dir() {
+                bail!(
+                    "shader crate path does not exist or is not a directory: {}",
+                    crate_path.display()
+                );
+            }
+            return Ok(Some(ShaderConfig {
+                crate_path,
+                target_fps: DEFAULT_SHADER_TARGET_FPS,
+                hot_reload: true,
+                reload_debounce: Duration::from_millis(DEFAULT_SHADER_RELOAD_DEBOUNCE_MS),
+                mouse_enabled: false,
+            }));
+        }
+        return Ok(None);
+    };
+
+    let crate_path = resolve_path(
+        raw.crate_path
+            .unwrap_or_else(|| PathBuf::from("shaders/live_bg_shader")),
+        config_parent,
+    );
+    if renderer == RendererMode::Shader && (!crate_path.exists() || !crate_path.is_dir()) {
+        bail!(
+            "shader crate path does not exist or is not a directory: {}",
+            crate_path.display()
+        );
+    }
+
+    let target_fps = raw.target_fps.unwrap_or(DEFAULT_SHADER_TARGET_FPS);
+    if target_fps == 0 || target_fps > 240 {
+        bail!("shader.target_fps must be between 1 and 240");
+    }
+
+    let reload_debounce_ms = raw
+        .reload_debounce_ms
+        .unwrap_or(DEFAULT_SHADER_RELOAD_DEBOUNCE_MS);
+    if reload_debounce_ms < MIN_SHADER_RELOAD_DEBOUNCE_MS {
+        bail!(
+            "shader.reload_debounce_ms must be at least {MIN_SHADER_RELOAD_DEBOUNCE_MS} milliseconds"
+        );
+    }
+
+    Ok(Some(ShaderConfig {
+        crate_path,
+        target_fps,
+        hot_reload: raw.hot_reload.unwrap_or(true),
+        reload_debounce: Duration::from_millis(reload_debounce_ms),
+        mouse_enabled: raw.mouse_enabled.unwrap_or(false),
+    }))
 }
 
 fn parse_duration_field(
@@ -255,15 +362,11 @@ fn parse_duration_string(field_name: &str, raw: &str) -> Result<u64> {
     }
 
     let value = number_str.parse::<u64>().with_context(|| {
-        format!(
-            "{field_name} must contain a valid integer before its unit; got \"{number_str}\""
-        )
+        format!("{field_name} must contain a valid integer before its unit; got \"{number_str}\"")
     })?;
 
     value.checked_mul(multiplier).with_context(|| {
-        format!(
-            "{field_name} duration is too large to represent in seconds: \"{trimmed}\""
-        )
+        format!("{field_name} duration is too large to represent in seconds: \"{trimmed}\"")
     })
 }
 
@@ -457,7 +560,14 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
 
-        for timer in ["\"40\"", "\"1d\"", "\"abc\"", "\"-5m\"", "\"1.5h\"", "\"1h30m\""] {
+        for timer in [
+            "\"40\"",
+            "\"1d\"",
+            "\"abc\"",
+            "\"-5m\"",
+            "\"1.5h\"",
+            "\"1h30m\"",
+        ] {
             let raw = format!(
                 r#"
 timer = {}

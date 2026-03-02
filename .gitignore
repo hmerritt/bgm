@@ -1,3 +1,5 @@
 /target
 /bgm.hcl
-
+/shaders/**/target
+/shaders/*.spv
+/shaders/**/Cargo.lock
