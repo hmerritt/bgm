@@ -29,9 +29,10 @@ Squirrel may launch the app with one of these internal flags:
 
 The release pipeline publishes both existing assets and Squirrel assets:
 
-- `aura-<version>-windows-x86_64.exe`
-- `aura-<version>-windows-x86_64.zip`
-- `aura-<version>-installer.exe`
+- `aura-<version>-windows.exe`
+- `aura-<version>-windows.zip`
+- `aura-<version>-windows-installer.exe`
+- `aura-<version>-windows-installer.zip`
 - `RELEASES`
 - `*.nupkg` (full package and delta package when generated)
 

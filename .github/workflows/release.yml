@@ -61,9 +61,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $exeName = "aura-${{ github.ref_name }}-windows-x86_64.exe"
+          $exeName = "aura-${{ github.ref_name }}-windows.exe"
           Copy-Item target\release\aura.exe "dist\$exeName" -Force
-          Compress-Archive -Path "dist\$exeName" -DestinationPath "dist\aura-${{ github.ref_name }}-windows-x86_64.zip" -Force
+          Compress-Archive -Path "dist\$exeName" -DestinationPath "dist\aura-${{ github.ref_name }}-windows.zip" -Force
 
       - name: Package Squirrel artifacts
         if: steps.tag_check.outputs.valid == 'true'
@@ -78,8 +78,9 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            dist/aura-${{ github.ref_name }}-windows-x86_64.exe
-            dist/aura-${{ github.ref_name }}-windows-x86_64.zip
-            dist/squirrel/aura-${{ github.ref_name }}-installer.exe
+            dist/aura-${{ github.ref_name }}-windows.exe
+            dist/aura-${{ github.ref_name }}-windows.zip
+            dist/squirrel/aura-${{ github.ref_name }}-windows-installer.exe
+            dist/squirrel/aura-${{ github.ref_name }}-windows-installer.zip
             dist/squirrel/RELEASES
             dist/squirrel/*.nupkg

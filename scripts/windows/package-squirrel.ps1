@@ -144,8 +144,10 @@ if (-not $setupExists) {
     throw "Squirrel setup executable was not found. It may not have generated, or it remains locked by an external process."
 }
 
-$versionedSetup = Join-Path $outputFullPath ("aura-{0}-installer.exe" -f $Version)
+$versionedSetup = Join-Path $outputFullPath ("aura-{0}-windows-installer.exe" -f $Version)
 Copy-Item -LiteralPath $setupPath -Destination $versionedSetup -Force
+$versionedInstallerZip = Join-Path $outputFullPath ("aura-{0}-windows-installer.zip" -f $Version)
+Compress-Archive -Path $versionedSetup -DestinationPath $versionedInstallerZip -Force
 
 Write-Host "Squirrel packaging complete."
 Write-Host "Output directory: $outputFullPath"
