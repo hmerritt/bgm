@@ -119,8 +119,24 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $setupPath = Join-Path $outputFullPath "Setup.exe"
-if (-not (Test-Path -LiteralPath $setupPath)) {
-    throw "Squirrel setup executable was not generated."
+
+# Polling loop to mitigate file system / Antivirus locking race conditions
+$maxRetries = 10
+$retryCount = 0
+$setupExists = $false
+
+while (-not $setupExists -and $retryCount -lt $maxRetries) {
+    if (Test-Path -LiteralPath $setupPath) {
+        $setupExists = $true
+    }
+    else {
+        Start-Sleep -Milliseconds 500
+        $retryCount++
+    }
+}
+
+if (-not $setupExists) {
+    throw "Squirrel setup executable was not found. It may not have generated, or it remains locked by an external process."
 }
 
 $versionedSetup = Join-Path $outputFullPath ("aura-{0}-setup.exe" -f $Version)
