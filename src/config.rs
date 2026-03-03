@@ -149,16 +149,23 @@ enum DurationInput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct RawConfig {
+#[serde(deny_unknown_fields)]
+struct RawImageConfig {
     timer: Option<DurationInput>,
     #[serde(rename = "remoteUpdateTimer")]
     remote_update_timer: Option<DurationInput>,
-    sources: Vec<RawSourceConfig>,
+    sources: Option<Vec<RawSourceConfig>>,
+    format: Option<OutputFormat>,
+    jpeg_quality: Option<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    image: Option<RawImageConfig>,
     cache_dir: Option<PathBuf>,
     state_file: Option<PathBuf>,
     log_level: Option<String>,
-    image_format: Option<OutputFormat>,
-    jpeg_quality: Option<u8>,
     max_cache_mb: Option<u64>,
     max_cache_age_days: Option<u64>,
     renderer: Option<RendererMode>,
@@ -184,18 +191,23 @@ pub enum SourceConfig {
 
 #[derive(Debug, Clone)]
 pub struct AuraConfig {
-    pub timer: Duration,
-    pub remote_update_timer: Duration,
-    pub sources: Vec<SourceConfig>,
+    pub image: ImageConfig,
     pub cache_dir: PathBuf,
     pub state_file: PathBuf,
     pub log_level: String,
-    pub image_format: OutputFormat,
-    pub jpeg_quality: u8,
     pub max_cache_bytes: u64,
     pub max_cache_age: Duration,
     pub renderer: RendererMode,
     pub shader: Option<ShaderConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageConfig {
+    pub timer: Duration,
+    pub remote_update_timer: Duration,
+    pub sources: Vec<SourceConfig>,
+    pub format: OutputFormat,
+    pub jpeg_quality: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -222,30 +234,27 @@ pub fn parse_from_str(content: &str, path: &Path) -> Result<AuraConfig> {
 pub fn default_hcl(pictures_dir: &Path) -> String {
     let pictures = hcl_path(pictures_dir);
     format!(
-        r#"# aura (Background Manager) configuration file
-
-# Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
-# Supported source types: "file" | "directory" | "rss"
-sources = [
-  {{ type = "directory", path = "{}", recursive = true, extensions = ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }}
-]
-
-# Duration for switching to a new wallpaper: "40s" | "12m" | "3h"
-timer = "3h"
-
-# Target image format for wallpapers. All source images will be converted to this format before being set as wallpaper: "jpg" | "png"
-image_format = "jpg"
-# Quality for JPEG output (ignored for other formats): 1-100
-jpeg_quality = 90
-
-# Duration for checking remote sources for new images: "40s" | "12m" | "3h"
-remoteUpdateTimer = "2h"
-
-# Log level: "error" | "warn" | "info" | "debug" | "trace"
-log_level = "warn"
+        r#"# aura (Wallpaper Manager) configuration file
 
 # Runtime renderer mode: "image" | "shader"
 renderer = "image"
+
+# Image mode options (used when renderer = "image")
+image = {{
+	# Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
+	# Supported source types: "file" | "directory" | "rss"
+	sources = [
+        {{ type = "directory", path = "{}", recursive = true, extensions = ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }}
+    ]
+    # Duration for switching to a new wallpaper: "40s" | "12m" | "3h"
+    timer = "3h"
+	# Duration for checking remote sources for new images: "40s" | "12m" | "3h"
+	remoteUpdateTimer = "2h"
+	# Target image format for wallpapers. All source images will be converted to this format before being set as wallpaper: "jpg" | "png"
+	format = "jpg"
+	# Quality for JPEG output (ignored for other formats): 1-100
+	jpeg_quality = 90
+}}
 
 # Shader mode options (used when renderer = "shader")
 shader = {{
@@ -267,25 +276,6 @@ impl AuraConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("aura");
 
-        let timer_secs = parse_duration_field("timer", raw.timer, DEFAULT_TIMER_SECS)?;
-        if timer_secs < MIN_TIMER_SECS {
-            bail!("timer must be at least {MIN_TIMER_SECS} seconds");
-        }
-
-        let remote_secs = parse_duration_field(
-            "remoteUpdateTimer",
-            raw.remote_update_timer,
-            DEFAULT_REMOTE_UPDATE_TIMER_SECS,
-        )?;
-        if remote_secs < MIN_REMOTE_UPDATE_SECS {
-            bail!("remoteUpdateTimer must be at least {MIN_REMOTE_UPDATE_SECS} seconds");
-        }
-
-        let jpeg_quality = raw.jpeg_quality.unwrap_or(DEFAULT_JPEG_QUALITY);
-        if jpeg_quality == 0 || jpeg_quality > 100 {
-            bail!("jpeg_quality must be between 1 and 100");
-        }
-
         let cache_dir = resolve_path(
             raw.cache_dir.unwrap_or_else(|| app_dir.join("cache")),
             config_parent,
@@ -294,17 +284,7 @@ impl AuraConfig {
             raw.state_file.unwrap_or_else(|| app_dir.join("state.json")),
             config_parent,
         );
-
-        let sources = raw
-            .sources
-            .into_iter()
-            .map(|source| validate_source(source, config_parent))
-            .collect::<Result<Vec<_>>>()?;
-
-        if sources.is_empty() {
-            bail!("at least one source is required");
-        }
-
+        let image = parse_image_config(raw.image, config_parent)?;
         let max_cache_bytes = raw.max_cache_mb.unwrap_or(DEFAULT_MAX_CACHE_MB) * 1024 * 1024;
         let max_cache_age = Duration::from_secs(
             raw.max_cache_age_days.unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS) * 24 * 60 * 60,
@@ -313,20 +293,100 @@ impl AuraConfig {
         let shader = parse_shader_config(raw.shader, renderer)?;
 
         Ok(Self {
-            timer: Duration::from_secs(timer_secs),
-            remote_update_timer: Duration::from_secs(remote_secs),
-            sources,
+            image,
             cache_dir,
             state_file,
             log_level: raw.log_level.unwrap_or_else(|| "info".to_string()),
-            image_format: raw.image_format.unwrap_or(OutputFormat::Jpg),
-            jpeg_quality,
             max_cache_bytes,
             max_cache_age,
             renderer,
             shader,
         })
     }
+}
+
+fn parse_image_config(raw: Option<RawImageConfig>, config_parent: &Path) -> Result<ImageConfig> {
+    let raw = raw.unwrap_or_else(|| RawImageConfig {
+        timer: None,
+        remote_update_timer: None,
+        sources: None,
+        format: None,
+        jpeg_quality: None,
+    });
+    let timer_secs = parse_duration_field("image.timer", raw.timer, DEFAULT_TIMER_SECS)?;
+    if timer_secs < MIN_TIMER_SECS {
+        bail!("image.timer must be at least {MIN_TIMER_SECS} seconds");
+    }
+
+    let remote_secs = parse_duration_field(
+        "image.remoteUpdateTimer",
+        raw.remote_update_timer,
+        DEFAULT_REMOTE_UPDATE_TIMER_SECS,
+    )?;
+    if remote_secs < MIN_REMOTE_UPDATE_SECS {
+        bail!("image.remoteUpdateTimer must be at least {MIN_REMOTE_UPDATE_SECS} seconds");
+    }
+
+    let jpeg_quality = raw.jpeg_quality.unwrap_or(DEFAULT_JPEG_QUALITY);
+    if jpeg_quality == 0 || jpeg_quality > 100 {
+        bail!("image.jpeg_quality must be between 1 and 100");
+    }
+
+    let sources = raw
+        .sources
+        .unwrap_or_else(|| default_raw_image_sources(config_parent))
+        .into_iter()
+        .map(|source| validate_source(source, config_parent))
+        .collect::<Result<Vec<_>>>()?;
+
+    if sources.is_empty() {
+        bail!("image.sources must contain at least one source");
+    }
+
+    Ok(ImageConfig {
+        timer: Duration::from_secs(timer_secs),
+        remote_update_timer: Duration::from_secs(remote_secs),
+        sources,
+        format: raw.format.unwrap_or(OutputFormat::Jpg),
+        jpeg_quality,
+    })
+}
+
+fn default_raw_image_sources(config_parent: &Path) -> Vec<RawSourceConfig> {
+    let fallback_path = if let Some(path) = dirs::picture_dir() {
+        if path.exists() && path.is_dir() {
+            path
+        } else if let Some(home) = dirs::home_dir() {
+            let home_pictures = home.join("Pictures");
+            if home_pictures.exists() && home_pictures.is_dir() {
+                home_pictures
+            } else {
+                config_parent.to_path_buf()
+            }
+        } else {
+            config_parent.to_path_buf()
+        }
+    } else if let Some(home) = dirs::home_dir() {
+        let home_pictures = home.join("Pictures");
+        if home_pictures.exists() && home_pictures.is_dir() {
+            home_pictures
+        } else {
+            config_parent.to_path_buf()
+        }
+    } else {
+        config_parent.to_path_buf()
+    };
+
+    vec![RawSourceConfig::Directory {
+        path: fallback_path,
+        recursive: true,
+        extensions: Some(
+            ["jpg", "jpeg", "png", "webp", "bmp", "gif"]
+                .into_iter()
+                .map(|x| x.to_string())
+                .collect(),
+        ),
+    }]
 }
 
 fn parse_shader_config(
@@ -511,22 +571,24 @@ mod tests {
 
         let raw = format!(
             r#"
-timer = 15
-remoteUpdateTimer = 600
-sources = [
-  {{ type = "file", path = "{}" }},
-  {{ type = "directory", path = "{}", recursive = false }},
-  {{ type = "rss", url = "https://example.com/feed.xml", max_items = 20 }}
-]
+image = {{
+  timer = 15
+  remoteUpdateTimer = 600
+  sources = [
+    {{ type = "file", path = "{}" }},
+    {{ type = "directory", path = "{}", recursive = false }},
+    {{ type = "rss", url = "https://example.com/feed.xml", max_items = 20 }}
+  ]
+}}
 "#,
             hcl_path(&img),
             hcl_path(&dir)
         );
 
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
-        assert_eq!(cfg.timer.as_secs(), 15);
-        assert_eq!(cfg.remote_update_timer.as_secs(), 600);
-        assert_eq!(cfg.sources.len(), 3);
+        assert_eq!(cfg.image.timer.as_secs(), 15);
+        assert_eq!(cfg.image.remote_update_timer.as_secs(), 600);
+        assert_eq!(cfg.image.sources.len(), 3);
     }
 
     #[test]
@@ -537,8 +599,10 @@ sources = [
 
         let raw = format!(
             r#"
-timer = 2
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = 2
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             hcl_path(&dir)
         );
@@ -557,11 +621,11 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         assert!(raw.contains("quality = \"low\""));
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
-        assert_eq!(cfg.timer.as_secs(), 10_800);
-        assert_eq!(cfg.remote_update_timer.as_secs(), 7_200);
-        assert_eq!(cfg.sources.len(), 1);
+        assert_eq!(cfg.image.timer.as_secs(), 10_800);
+        assert_eq!(cfg.image.remote_update_timer.as_secs(), 7_200);
+        assert_eq!(cfg.image.sources.len(), 1);
 
-        match &cfg.sources[0] {
+        match &cfg.image.sources[0] {
             SourceConfig::Directory {
                 path, recursive, ..
             } => {
@@ -581,8 +645,10 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let raw = format!(
             r#"
 renderer = "shader"
-sources = [ {{ type = "directory", path = "{}" }} ]
-        shader = {{
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+shader = {{
   name = "gradient_glossy"
   memory_target_mb = 9999
   power_preference = "not_a_real_mode"
@@ -615,7 +681,9 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let raw = format!(
             r#"
 renderer = "shader"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 shader = {{
   name = "gradient_shader"
 }}
@@ -639,7 +707,9 @@ shader = {{
         let raw = format!(
             r#"
 renderer = "shader"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 shader = {{
   name = "gradient_glossy"
   quality = "high"
@@ -664,7 +734,9 @@ shader = {{
         let raw = format!(
             r#"
 renderer = "shader"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 shader = {{
   quality = "ultra"
 }}
@@ -708,16 +780,18 @@ shader = {{
 
         let raw = format!(
             r#"
-timer = "40s"
-remoteUpdateTimer = "12m"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = "40s"
+  remoteUpdateTimer = "12m"
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             hcl_path(&dir)
         );
 
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
-        assert_eq!(cfg.timer.as_secs(), 40);
-        assert_eq!(cfg.remote_update_timer.as_secs(), 720);
+        assert_eq!(cfg.image.timer.as_secs(), 40);
+        assert_eq!(cfg.image.remote_update_timer.as_secs(), 720);
     }
 
     #[test]
@@ -728,16 +802,18 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 
         let raw = format!(
             r#"
-timer = "3 H"
-remoteUpdateTimer = "40 S"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = "3 H"
+  remoteUpdateTimer = "40 S"
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             hcl_path(&dir)
         );
 
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
-        assert_eq!(cfg.timer.as_secs(), 10_800);
-        assert_eq!(cfg.remote_update_timer.as_secs(), 40);
+        assert_eq!(cfg.image.timer.as_secs(), 10_800);
+        assert_eq!(cfg.image.remote_update_timer.as_secs(), 40);
     }
 
     #[test]
@@ -756,15 +832,17 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         ] {
             let raw = format!(
                 r#"
-timer = {}
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = {}
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
                 timer,
                 hcl_path(&dir)
             );
             assert!(
                 parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err(),
-                "expected timer={} to fail",
+                "expected image.timer={} to fail",
                 timer
             );
         }
@@ -778,8 +856,10 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 
         let tiny_timer = format!(
             r#"
-timer = "2s"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = "2s"
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             hcl_path(&dir)
         );
@@ -787,9 +867,11 @@ sources = [ {{ type = "directory", path = "{}" }} ]
 
         let tiny_remote = format!(
             r#"
-timer = "10s"
-remoteUpdateTimer = "20s"
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = "10s"
+  remoteUpdateTimer = "20s"
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             hcl_path(&dir)
         );
@@ -805,10 +887,61 @@ sources = [ {{ type = "directory", path = "{}" }} ]
         let huge = format!("\"{}h\"", u64::MAX);
         let raw = format!(
             r#"
-timer = {}
-sources = [ {{ type = "directory", path = "{}" }} ]
+image = {{
+  timer = {}
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
 "#,
             huge,
+            hcl_path(&dir)
+        );
+
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+    }
+
+    #[test]
+    fn missing_image_uses_defaults() {
+        let tmp = tempdir().unwrap();
+
+        let raw = "";
+        let cfg = parse_from_str(raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(cfg.image.timer.as_secs(), 300);
+        assert_eq!(cfg.image.remote_update_timer.as_secs(), 3600);
+        assert_eq!(cfg.image.format, OutputFormat::Jpg);
+        assert_eq!(cfg.image.jpeg_quality, 90);
+        assert_eq!(cfg.image.sources.len(), 1);
+    }
+
+    #[test]
+    fn rejects_legacy_top_level_image_keys() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+image_format = "png"
+sources = [ {{ type = "directory", path = "{}" }} ]
+"#,
+            hcl_path(&dir)
+        );
+
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+    }
+
+    #[test]
+    fn rejects_legacy_top_level_timer() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+timer = 15
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+"#,
             hcl_path(&dir)
         );
 

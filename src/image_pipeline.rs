@@ -88,21 +88,23 @@ fn save_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AuraConfig, RendererMode};
+    use crate::config::{AuraConfig, ImageConfig, RendererMode};
     use image::{ImageBuffer, Rgba};
     use std::time::Duration;
     use tempfile::tempdir;
 
     fn test_cache_manager(base: &Path) -> CacheManager {
         let config = AuraConfig {
-            timer: Duration::from_secs(300),
-            remote_update_timer: Duration::from_secs(3600),
-            sources: Vec::new(),
+            image: ImageConfig {
+                timer: Duration::from_secs(300),
+                remote_update_timer: Duration::from_secs(3600),
+                sources: Vec::new(),
+                format: OutputFormat::Jpg,
+                jpeg_quality: 90,
+            },
             cache_dir: base.join("cache"),
             state_file: base.join("state.json"),
             log_level: "info".to_string(),
-            image_format: OutputFormat::Jpg,
-            jpeg_quality: 90,
             max_cache_bytes: 1024 * 1024,
             max_cache_age: Duration::from_secs(24 * 60 * 60),
             renderer: RendererMode::Image,

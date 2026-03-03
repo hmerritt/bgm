@@ -86,8 +86,8 @@ async fn main() -> Result<()> {
     rotation.rebuild_pool(initial_candidates);
     rotation.restore_state(&persisted_state);
     let session_stats = Arc::new(SessionStats::new(
-        format_config_duration(config.timer),
-        format_config_duration(config.remote_update_timer),
+        format_config_duration(config.image.timer),
+        format_config_duration(config.image.remote_update_timer),
     ));
     session_stats.set_total_images(local_images_count + remote_images_count);
 
@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut scheduler = Scheduler::new(config.timer, config.remote_update_timer);
+    let mut scheduler = Scheduler::new(config.image.timer, config.image.remote_update_timer);
     info!("aura is running");
 
     loop {
@@ -276,13 +276,14 @@ async fn main() -> Result<()> {
                         cache = new_cache;
                         sources = new_sources;
                         state_store = StateStore::new(config.state_file.clone());
-                        scheduler = Scheduler::new(config.timer, config.remote_update_timer);
+                        scheduler =
+                            Scheduler::new(config.image.timer, config.image.remote_update_timer);
                         local_images_count = next_local_count;
                         remote_images_count = next_remote_count;
                         session_stats.set_total_images(local_images_count + remote_images_count);
-                        session_stats.set_timer_display(format_config_duration(config.timer));
+                        session_stats.set_timer_display(format_config_duration(config.image.timer));
                         session_stats.set_remote_update_timer_display(format_config_duration(
-                            config.remote_update_timer,
+                            config.image.remote_update_timer,
                         ));
                         logging::set_level(&config.log_level);
 
@@ -496,8 +497,8 @@ async fn try_switch_once(
     let processed = image_pipeline::prepare_for_output(
         &candidate.local_path,
         cache,
-        config.image_format,
-        config.jpeg_quality,
+        config.image.format,
+        config.image.jpeg_quality,
     )
     .with_context(|| format!("failed to process {}", candidate.local_path.display()))?;
 
@@ -664,7 +665,7 @@ mod tests {
 
         let text = fs::read_to_string(&config_path).unwrap();
         let parsed = config::parse_from_str(&text, &config_path).unwrap();
-        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.image.sources.len(), 1);
     }
 
     #[test]
@@ -673,7 +674,7 @@ mod tests {
         let config_path = tmp.path().join(".config").join("aura.hcl");
         let pictures = tmp.path().join("Pictures");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-        fs::write(&config_path, "timer = 300\nsources = []\n").unwrap();
+        fs::write(&config_path, "image = { timer = 300, sources = [] }\n").unwrap();
 
         let created = ensure_config_exists_with_pictures(&config_path, &pictures).unwrap();
         assert!(!created);

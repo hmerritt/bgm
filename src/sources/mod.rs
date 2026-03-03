@@ -46,7 +46,7 @@ pub fn build_sources(
 ) -> Result<Vec<Box<dyn ImageSource>>> {
     let mut sources: Vec<Box<dyn ImageSource>> = Vec::new();
 
-    for source in &config.sources {
+    for source in &config.image.sources {
         match source {
             SourceConfig::File { path } => {
                 sources.push(Box::new(single::SingleSource::new(path.clone())));
