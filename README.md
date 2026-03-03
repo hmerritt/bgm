@@ -2,6 +2,8 @@
 
 A simple, lightweight, wallpaper manager written in Rust.
 
+[Download here 💾](https://github.com/hmerritt/aura/releases/latest)
+
 ## ⚡ Features
 
 - Small in size, low memory footprint
@@ -14,7 +16,7 @@ A simple, lightweight, wallpaper manager written in Rust.
     - Directory path
     - RSS feed
 
-## Example `aura.hcl`
+## Example `aura.hcl` config file
 
 Default location is `~/.config/aura.hcl`
 
