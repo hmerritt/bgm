@@ -45,7 +45,11 @@ fn create_startup_and_start_menu_shortcuts() -> Result<()> {
         ],
     ];
 
-    run_update_variants(&update_exe, &variants, "create startup/start menu shortcuts")
+    run_update_variants(
+        &update_exe,
+        &variants,
+        "create startup/start menu shortcuts",
+    )
 }
 
 fn remove_startup_and_start_menu_shortcuts() -> Result<()> {
@@ -73,14 +77,21 @@ fn remove_startup_and_start_menu_shortcuts() -> Result<()> {
         ],
     ];
 
-    run_update_variants(&update_exe, &variants, "remove startup/start menu shortcuts")
+    run_update_variants(
+        &update_exe,
+        &variants,
+        "remove startup/start menu shortcuts",
+    )
 }
 
-fn locate_update_exe() -> Result<PathBuf> {
+pub(crate) fn locate_update_exe() -> Result<PathBuf> {
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let app_dir = current_exe
-        .parent()
-        .with_context(|| format!("failed to resolve app directory for {}", current_exe.display()))?;
+    let app_dir = current_exe.parent().with_context(|| {
+        format!(
+            "failed to resolve app directory for {}",
+            current_exe.display()
+        )
+    })?;
     let root_dir = app_dir.parent().with_context(|| {
         format!(
             "failed to resolve squirrel root directory from {}",

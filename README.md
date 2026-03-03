@@ -11,6 +11,7 @@ A simple, lightweight, wallpaper manager written in Rust.
 - Caches remote images locally for faster switching
 - Automatically re-encodes images for wider format support: `jpeg` | `png` | `bmp` | `gif` | `webp`
 - Tray icon to trigger a new image quickly
+- Windows self-updater for Squirrel installs (startup + periodic + manual checks)
 - Multiple image `sources` can be added
     - Single image path
     - Directory path
@@ -41,6 +42,13 @@ image = {
   format = "jpg"
   # Quality for JPEG output (ignored for other formats): 1-100
   jpeg_quality = 90
+}
+
+# App update settings (Windows + Squirrel install only)
+updater = {
+  enabled = true
+  checkInterval = "6h"
+  feedUrl = "https://github.com/hmerritt/aura/releases/latest/download"
 }
 
 # Shader mode options (used when renderer = "shader")
@@ -105,6 +113,7 @@ pwsh -File scripts/windows/package-squirrel.ps1 -Version 1.2.3
     - Default launch uses the GUI subsystem and does not open a terminal window.
     - `--debug` shows logs in a dedicated console window (no attach to the current terminal session).
 - Windows installer packaging uses `Squirrel.Windows` in per-user scope (`%LOCALAPPDATA%`) and supports startup registration.
+- Windows Squirrel installs automatically check/download app updates in the background and expose `Check for Updates` in tray.
 - Installer details: `docs/windows-installer.md`
 - Windows shader mode: shaders are compiled at build time from `shaders/*` (excluding `shader_builder`) using rust-gpu.
 - Linux/macOS: check/test/build are supported for development; wallpaper apply is currently unsupported at runtime.

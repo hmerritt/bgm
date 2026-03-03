@@ -88,7 +88,7 @@ fn save_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AuraConfig, ImageConfig, RendererMode};
+    use crate::config::{AuraConfig, ImageConfig, RendererMode, UpdaterConfig};
     use image::{ImageBuffer, Rgba};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -101,6 +101,11 @@ mod tests {
                 sources: Vec::new(),
                 format: OutputFormat::Jpg,
                 jpeg_quality: 90,
+            },
+            updater: UpdaterConfig {
+                enabled: false,
+                check_interval: Duration::from_secs(6 * 3600),
+                feed_url: "https://github.com/hmerritt/aura/releases/latest/download".to_string(),
             },
             cache_dir: base.join("cache"),
             state_file: base.join("state.json"),

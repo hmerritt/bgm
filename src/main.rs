@@ -12,6 +12,7 @@ mod scheduler;
 mod sources;
 mod state;
 mod tray;
+mod updater;
 mod version;
 mod wallpaper;
 
@@ -25,12 +26,14 @@ use crate::scheduler::{Scheduler, SchedulerEvent};
 use crate::sources::{build_sources, ImageCandidate, ImageSource, Origin, SourceKind};
 use crate::state::{PersistedState, StateStore};
 use crate::tray::{format_config_duration, SessionStats, TrayEvent};
+use crate::updater::{RestartContext, UpdateTrigger, UpdaterEvent, UpdaterStatus};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +55,12 @@ struct CliOptions {
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let options = parse_cli_options(&args)?;
+    let relaunch_args: Vec<String> = args
+        .iter()
+        .filter(|arg| SquirrelEvent::from_flag(arg).is_none())
+        .cloned()
+        .collect();
+    let launched_from_squirrel_firstrun = options.squirrel_event == Some(SquirrelEvent::Firstrun);
 
     if installer::handle_squirrel_event(options.squirrel_event)? {
         return Ok(());
@@ -96,9 +105,22 @@ async fn main() -> Result<()> {
     let mut rotation = RotationManager::new();
     rotation.rebuild_pool(initial_candidates);
     rotation.restore_state(&persisted_state);
+    let mut updater_runtime = updater::initialize(&config.updater, relaunch_args.clone());
+    let mut updater_event_rx = updater_runtime.take_event_receiver();
+    let mut updater_restart_context = updater_runtime.restart_context();
+    let mut updater_operation_in_progress = false;
+    let mut restart_pending_on_next_switch = false;
+    let mut startup_update_check_deadline = None;
+    let mut updater_interval = updater_runtime.check_interval().map(|check_interval| {
+        let mut interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + check_interval, check_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval
+    });
     let session_stats = Arc::new(SessionStats::new(
         format_config_duration(config.image.timer),
         format_config_duration(config.image.remote_update_timer),
+        updater_runtime.status().label().to_string(),
     ));
     session_stats.set_total_images(local_images_count + remote_images_count);
 
@@ -159,6 +181,19 @@ async fn main() -> Result<()> {
     }
 
     let mut scheduler = Scheduler::new(config.image.timer, config.image.remote_update_timer);
+    if updater_runtime.status() == UpdaterStatus::Idle {
+        if launched_from_squirrel_firstrun {
+            startup_update_check_deadline =
+                Some(tokio::time::Instant::now() + Duration::from_secs(15));
+            info!("delaying startup app update check because this is squirrel first run");
+        } else if request_update_check(
+            &updater_runtime,
+            &mut updater_operation_in_progress,
+            UpdateTrigger::Startup,
+        ) {
+            info!("startup app update check requested");
+        }
+    }
     info!("aura is running");
 
     loop {
@@ -170,6 +205,70 @@ async fn main() -> Result<()> {
                 }
                 persist_state(&state_store, &rotation, last_image_id.clone())?;
                 break;
+            }
+            _ = async {
+                if let Some(deadline) = startup_update_check_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if startup_update_check_deadline.is_some() => {
+                startup_update_check_deadline = None;
+                if request_update_check(
+                    &updater_runtime,
+                    &mut updater_operation_in_progress,
+                    UpdateTrigger::Startup,
+                ) {
+                    info!("delayed startup app update check requested");
+                }
+            }
+            _ = async {
+                if let Some(interval) = updater_interval.as_mut() {
+                    interval.tick().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if updater_interval.is_some() => {
+                let _ = request_update_check(
+                    &updater_runtime,
+                    &mut updater_operation_in_progress,
+                    UpdateTrigger::Periodic,
+                );
+            }
+            updater_event = async {
+                if let Some(receiver) = updater_event_rx.as_mut() {
+                    receiver.recv().await
+                } else {
+                    std::future::pending::<Option<UpdaterEvent>>().await
+                }
+            }, if updater_event_rx.is_some() => {
+                match updater_event {
+                    Some(UpdaterEvent::Status(status)) => {
+                        session_stats.set_app_update_status(status.label().to_string());
+                        updater_operation_in_progress = updater_status_in_progress(status);
+                    }
+                    Some(UpdaterEvent::InstallReady) => {
+                        restart_pending_on_next_switch = true;
+                        if active_mode == ActiveMode::Shader {
+                            if restart_after_update(
+                                updater_restart_context.as_ref(),
+                                &state_store,
+                                &rotation,
+                                last_image_id.clone(),
+                            ) {
+                                if let Some(renderer) = renderer.as_mut() {
+                                    renderer.stop();
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    None => {
+                        updater_event_rx = None;
+                        updater_operation_in_progress = false;
+                        session_stats.set_app_update_status(UpdaterStatus::Unsupported.label().to_string());
+                    }
+                }
             }
             renderer_event = async {
                 if let Some(receiver) = renderer_event_rx.as_mut() {
@@ -237,6 +336,19 @@ async fn main() -> Result<()> {
                             Ok(None) => warn!("tray requested switch but no image available"),
                             Err(error) => warn!(error = %error, "tray-requested wallpaper switch failed"),
                         }
+                        if restart_pending_on_next_switch
+                            && restart_after_update(
+                                updater_restart_context.as_ref(),
+                                &state_store,
+                                &rotation,
+                                last_image_id.clone(),
+                            )
+                        {
+                            if let Some(renderer) = renderer.as_mut() {
+                                renderer.stop();
+                            }
+                            break;
+                        }
                     }
                     Some(TrayEvent::ReloadSettings) => {
                         info!("tray requested settings reload");
@@ -298,6 +410,30 @@ async fn main() -> Result<()> {
                         ));
                         logging::set_level(&config.log_level);
 
+                        updater_runtime = updater::initialize(&config.updater, relaunch_args.clone());
+                        updater_event_rx = updater_runtime.take_event_receiver();
+                        updater_restart_context = updater_runtime.restart_context();
+                        updater_operation_in_progress = false;
+                        startup_update_check_deadline = None;
+                        updater_interval = updater_runtime.check_interval().map(|check_interval| {
+                            let mut interval = tokio::time::interval_at(
+                                tokio::time::Instant::now() + check_interval,
+                                check_interval,
+                            );
+                            interval
+                                .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            interval
+                        });
+                        session_stats
+                            .set_app_update_status(updater_runtime.status().label().to_string());
+                        if updater_runtime.status() == UpdaterStatus::Idle {
+                            let _ = request_update_check(
+                                &updater_runtime,
+                                &mut updater_operation_in_progress,
+                                UpdateTrigger::Startup,
+                            );
+                        }
+
                         if let Some(renderer) = renderer.as_mut() {
                             renderer.stop();
                         }
@@ -333,12 +469,34 @@ async fn main() -> Result<()> {
                             }
                         }
 
+                        if restart_pending_on_next_switch
+                            && active_mode == ActiveMode::Shader
+                            && restart_after_update(
+                                updater_restart_context.as_ref(),
+                                &state_store,
+                                &rotation,
+                                last_image_id.clone(),
+                            )
+                        {
+                            if let Some(renderer) = renderer.as_mut() {
+                                renderer.stop();
+                            }
+                            break;
+                        }
+
                         if let Err(error) =
                             persist_state(&state_store, &rotation, last_image_id.clone())
                         {
                             warn!(error = %error, "failed to persist state after settings reload");
                         }
                         info!("settings reload complete");
+                    }
+                    Some(TrayEvent::CheckForUpdates) => {
+                        let _ = request_update_check(
+                            &updater_runtime,
+                            &mut updater_operation_in_progress,
+                            UpdateTrigger::Manual,
+                        );
                     }
                     Some(TrayEvent::Exit) => {
                         info!("tray requested exit, stopping aura");
@@ -390,6 +548,19 @@ async fn main() -> Result<()> {
                                 warn!(error = %error, "failed to switch wallpaper");
                             }
                         }
+                        if restart_pending_on_next_switch
+                            && restart_after_update(
+                                updater_restart_context.as_ref(),
+                                &state_store,
+                                &rotation,
+                                last_image_id.clone(),
+                            )
+                        {
+                            if let Some(renderer) = renderer.as_mut() {
+                                renderer.stop();
+                            }
+                            break;
+                        }
                     }
                     SchedulerEvent::RefreshRemote => {
                         match refresh_all_sources(&mut sources).await {
@@ -412,6 +583,52 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn request_update_check(
+    updater_runtime: &updater::UpdaterRuntime,
+    updater_operation_in_progress: &mut bool,
+    trigger: UpdateTrigger,
+) -> bool {
+    if *updater_operation_in_progress {
+        return false;
+    }
+    if updater_runtime.request_check(trigger) {
+        *updater_operation_in_progress = true;
+        return true;
+    }
+    false
+}
+
+fn updater_status_in_progress(status: UpdaterStatus) -> bool {
+    matches!(
+        status,
+        UpdaterStatus::Checking
+            | UpdaterStatus::UpdateAvailable
+            | UpdaterStatus::Installing
+            | UpdaterStatus::InstalledPendingRestart
+    )
+}
+
+fn restart_after_update(
+    restart_context: Option<&RestartContext>,
+    state_store: &StateStore,
+    rotation: &RotationManager,
+    last_image_id: Option<String>,
+) -> bool {
+    let Some(restart_context) = restart_context else {
+        warn!("unable to restart after update: restart context is unavailable");
+        return false;
+    };
+    if let Err(error) = persist_state(state_store, rotation, last_image_id) {
+        warn!(error = %error, "failed to persist state before update restart");
+        return false;
+    }
+    if let Err(error) = updater::restart_installed_app(restart_context) {
+        warn!(error = %error, "failed to relaunch app after update install");
+        return false;
+    }
+    true
 }
 
 fn print_version_banner() {

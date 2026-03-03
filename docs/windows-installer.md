@@ -35,4 +35,18 @@ The release pipeline publishes both existing assets and Squirrel assets:
 - `RELEASES`
 - `*.nupkg` (full package and delta package when generated)
 
-These Squirrel artifacts are retained intentionally for future in-app self-update support.
+These Squirrel artifacts are required for in-app self-update support.
+
+## Runtime Self-Updates
+
+- `aura` checks for updates on startup and periodically in the background (default `6h`).
+- Tray menu includes `Check for Updates` for manual checks.
+- When an update is available, `aura` downloads and installs silently via `Update.exe --update`.
+- In image mode, restart is deferred until the next wallpaper-switch cycle.
+- In shader mode, restart is immediate after install completes.
+
+## Feed Requirements
+
+- The updater feed URL must host Squirrel `RELEASES` and matching `.nupkg` files at the same base URL.
+- Default feed URL is GitHub release latest-download assets:
+  - `https://github.com/hmerritt/aura/releases/latest/download`

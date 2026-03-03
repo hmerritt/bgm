@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 pub enum TrayEvent {
     NextWallpaper,
     ReloadSettings,
+    CheckForUpdates,
     Exit,
 }
 
@@ -13,6 +14,7 @@ pub enum TrayEvent {
 pub struct SessionStats {
     timer_display: RwLock<String>,
     remote_update_timer_display: RwLock<String>,
+    app_update_status: RwLock<String>,
     total_images: AtomicU64,
     images_shown: AtomicU64,
     manual_skips: AtomicU64,
@@ -21,10 +23,15 @@ pub struct SessionStats {
 }
 
 impl SessionStats {
-    pub fn new(timer_display: String, remote_update_timer_display: String) -> Self {
+    pub fn new(
+        timer_display: String,
+        remote_update_timer_display: String,
+        app_update_status: String,
+    ) -> Self {
         Self {
             timer_display: RwLock::new(timer_display),
             remote_update_timer_display: RwLock::new(remote_update_timer_display),
+            app_update_status: RwLock::new(app_update_status),
             total_images: AtomicU64::new(0),
             images_shown: AtomicU64::new(0),
             manual_skips: AtomicU64::new(0),
@@ -59,6 +66,20 @@ impl SessionStats {
             .remote_update_timer_display
             .write()
             .expect("remote update timer display lock poisoned") = remote_update_timer_display;
+    }
+
+    pub fn app_update_status(&self) -> String {
+        self.app_update_status
+            .read()
+            .expect("app update status lock poisoned")
+            .clone()
+    }
+
+    pub fn set_app_update_status(&self, app_update_status: String) {
+        *self
+            .app_update_status
+            .write()
+            .expect("app update status lock poisoned") = app_update_status;
     }
 
     pub fn set_total_images(&self, total_images: u64) {
@@ -152,6 +173,7 @@ pub(crate) fn format_config_duration(duration: Duration) -> String {
 pub(crate) struct TrayStatVisibility {
     pub timer: bool,
     pub remote_update: bool,
+    pub app_update: bool,
     pub images: bool,
     pub shown: bool,
     pub skipped: bool,
@@ -162,6 +184,7 @@ pub(crate) fn tray_stat_visibility(shader_active: bool) -> TrayStatVisibility {
     TrayStatVisibility {
         timer: !shader_active,
         remote_update: !shader_active,
+        app_update: true,
         images: !shader_active,
         shown: !shader_active,
         skipped: !shader_active,
@@ -258,17 +281,19 @@ mod tests {
 
     #[test]
     fn session_stats_counters_increment() {
-        let stats = SessionStats::new("3h".to_string(), "2h".to_string());
+        let stats = SessionStats::new("3h".to_string(), "2h".to_string(), "Idle".to_string());
         assert_eq!(stats.images_shown(), 0);
         assert_eq!(stats.manual_skips(), 0);
         assert_eq!(stats.total_images(), 0);
         assert!(!stats.is_shader_active());
         assert_eq!(stats.timer_display(), "3h");
         assert_eq!(stats.remote_update_timer_display(), "2h");
+        assert_eq!(stats.app_update_status(), "Idle");
 
         stats.set_total_images(42);
         stats.set_timer_display("15m".to_string());
         stats.set_remote_update_timer_display("45m".to_string());
+        stats.set_app_update_status("Checking".to_string());
         stats.set_shader_active(true);
         stats.inc_images_shown();
         stats.inc_images_shown();
@@ -277,6 +302,7 @@ mod tests {
         assert_eq!(stats.total_images(), 42);
         assert_eq!(stats.timer_display(), "15m");
         assert_eq!(stats.remote_update_timer_display(), "45m");
+        assert_eq!(stats.app_update_status(), "Checking");
         assert!(stats.is_shader_active());
         assert_eq!(stats.images_shown(), 2);
         assert_eq!(stats.manual_skips(), 1);
@@ -287,6 +313,7 @@ mod tests {
         let visibility = tray_stat_visibility(false);
         assert!(visibility.timer);
         assert!(visibility.remote_update);
+        assert!(visibility.app_update);
         assert!(visibility.images);
         assert!(visibility.shown);
         assert!(visibility.skipped);
@@ -298,6 +325,7 @@ mod tests {
         let visibility = tray_stat_visibility(true);
         assert!(!visibility.timer);
         assert!(!visibility.remote_update);
+        assert!(visibility.app_update);
         assert!(!visibility.images);
         assert!(!visibility.shown);
         assert!(!visibility.skipped);

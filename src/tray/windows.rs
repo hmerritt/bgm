@@ -49,6 +49,7 @@ const SETTINGS_ICON_FALLBACK_RESOURCE_ID: u16 = 301;
 const EXIT_ICON_FALLBACK_RESOURCE_ID: u16 = 302;
 const TRAY_COMMAND_NEXT_BACKGROUND: u32 = 1000;
 const TRAY_COMMAND_RELOAD_SETTINGS: u32 = 1001;
+const TRAY_COMMAND_CHECK_FOR_UPDATES: u32 = 1002;
 const TRAY_COMMAND_SETTINGS: u32 = 1004;
 const TRAY_COMMAND_EXIT: u32 = 1005;
 const MENU_ICON_SIZE: i32 = 16;
@@ -309,6 +310,7 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
 
     let timer_value = data.session_stats.timer_display().to_string();
     let remote_update_value = data.session_stats.remote_update_timer_display().to_string();
+    let app_update_value = data.session_stats.app_update_status();
     let images_value = data.session_stats.total_images().to_string();
     let shown_value = data.session_stats.images_shown().to_string();
     let skipped_value = data.session_stats.manual_skips().to_string();
@@ -316,6 +318,7 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
 
     let timer_label = wide_null(&format_stat_row("Timer", &timer_value));
     let remote_update_label = wide_null(&format_stat_row("Remote Update", &remote_update_value));
+    let app_update_label = wide_null(&format_stat_row("App Update", &app_update_value));
     let images_label = wide_null(&format_stat_row("Images", &images_value));
     let shown_label = wide_null(&format_stat_row("Shown", &shown_value));
     let skipped_label = wide_null(&format_stat_row("Skipped", &skipped_value));
@@ -324,6 +327,7 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     let stat_visibility = tray_stat_visibility(shader_active);
     let next_background_label = wide_null("Next Background");
     let reload_settings_label = wide_null("Reload Settings");
+    let check_updates_label = wide_null("Check for Updates");
     let settings_label = wide_null("Settings");
     let exit_label = wide_null("Exit");
     let next_background_icon = load_menu_icon_bitmap(
@@ -357,6 +361,12 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
     if stat_visibility.remote_update {
         if !insert_disabled_menu_item(menu, position, remote_update_label.as_ptr()) {
             tracing::warn!("failed to add Remote Update tray menu item");
+        }
+        position += 1;
+    }
+    if stat_visibility.app_update {
+        if !insert_disabled_menu_item(menu, position, app_update_label.as_ptr()) {
+            tracing::warn!("failed to add App Update tray menu item");
         }
         position += 1;
     }
@@ -408,6 +418,16 @@ unsafe fn show_context_menu(hwnd: HWND, data: &WindowData) {
         refresh_icon,
     ) {
         tracing::warn!("failed to add Reload Settings tray menu item");
+    }
+    position += 1;
+    if !insert_command_menu_item(
+        menu,
+        position,
+        TRAY_COMMAND_CHECK_FOR_UPDATES,
+        check_updates_label.as_ptr(),
+        refresh_icon,
+    ) {
+        tracing::warn!("failed to add Check for Updates tray menu item");
     }
     position += 1;
     if !insert_command_menu_item(
@@ -470,6 +490,9 @@ unsafe fn handle_tray_command(hwnd: HWND, data: &WindowData, command_id: u32) {
         }
         TRAY_COMMAND_RELOAD_SETTINGS => {
             let _ = data.event_tx.send(TrayEvent::ReloadSettings);
+        }
+        TRAY_COMMAND_CHECK_FOR_UPDATES => {
+            let _ = data.event_tx.send(TrayEvent::CheckForUpdates);
         }
         TRAY_COMMAND_SETTINGS => {
             open_settings_from_tray(hwnd, data);

@@ -7,8 +7,10 @@ use std::time::Duration;
 
 const DEFAULT_TIMER_SECS: u64 = 300;
 const DEFAULT_REMOTE_UPDATE_TIMER_SECS: u64 = 3600;
+const DEFAULT_UPDATER_CHECK_INTERVAL_SECS: u64 = 6 * 3600;
 const MIN_TIMER_SECS: u64 = 5;
 const MIN_REMOTE_UPDATE_SECS: u64 = 30;
+const MIN_UPDATER_CHECK_INTERVAL_SECS: u64 = 10 * 60;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
 const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
@@ -16,6 +18,7 @@ const LEGACY_SHADER_NAME: &str = "gradient_shader";
 const DEFAULT_SHADER_QUALITY: ShaderQualityPreset = ShaderQualityPreset::Medium;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
+const DEFAULT_UPDATER_FEED_URL: &str = "https://github.com/hmerritt/aura/releases/latest/download";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -161,8 +164,19 @@ struct RawImageConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawUpdaterConfig {
+    enabled: Option<bool>,
+    #[serde(rename = "checkInterval")]
+    check_interval: Option<DurationInput>,
+    #[serde(rename = "feedUrl")]
+    feed_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     image: Option<RawImageConfig>,
+    updater: Option<RawUpdaterConfig>,
     cache_dir: Option<PathBuf>,
     state_file: Option<PathBuf>,
     log_level: Option<String>,
@@ -192,6 +206,7 @@ pub enum SourceConfig {
 #[derive(Debug, Clone)]
 pub struct AuraConfig {
     pub image: ImageConfig,
+    pub updater: UpdaterConfig,
     pub cache_dir: PathBuf,
     pub state_file: PathBuf,
     pub log_level: String,
@@ -208,6 +223,13 @@ pub struct ImageConfig {
     pub sources: Vec<SourceConfig>,
     pub format: OutputFormat,
     pub jpeg_quality: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdaterConfig {
+    pub enabled: bool,
+    pub check_interval: Duration,
+    pub feed_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +278,15 @@ image = {{
 	jpeg_quality = 90
 }}
 
+# App update settings (Windows + Squirrel install only)
+updater = {{
+    enabled = true
+    # Duration between background update checks
+    checkInterval = "6h"
+    # Base URL containing RELEASES and .nupkg artifacts
+    feedUrl = "https://github.com/hmerritt/aura/releases/latest/download"
+}}
+
 # Shader mode options (used when renderer = "shader")
 shader = {{
 	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2"
@@ -285,6 +316,7 @@ impl AuraConfig {
             config_parent,
         );
         let image = parse_image_config(raw.image, config_parent)?;
+        let updater = parse_updater_config(raw.updater)?;
         let max_cache_bytes = raw.max_cache_mb.unwrap_or(DEFAULT_MAX_CACHE_MB) * 1024 * 1024;
         let max_cache_age = Duration::from_secs(
             raw.max_cache_age_days.unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS) * 24 * 60 * 60,
@@ -294,6 +326,7 @@ impl AuraConfig {
 
         Ok(Self {
             image,
+            updater,
             cache_dir,
             state_file,
             log_level: raw.log_level.unwrap_or_else(|| "info".to_string()),
@@ -349,6 +382,34 @@ fn parse_image_config(raw: Option<RawImageConfig>, config_parent: &Path) -> Resu
         sources,
         format: raw.format.unwrap_or(OutputFormat::Jpg),
         jpeg_quality,
+    })
+}
+
+fn parse_updater_config(raw: Option<RawUpdaterConfig>) -> Result<UpdaterConfig> {
+    let raw = raw.unwrap_or_else(|| RawUpdaterConfig {
+        enabled: None,
+        check_interval: None,
+        feed_url: None,
+    });
+
+    let check_interval_secs = parse_duration_field(
+        "updater.checkInterval",
+        raw.check_interval,
+        DEFAULT_UPDATER_CHECK_INTERVAL_SECS,
+    )?;
+    if check_interval_secs < MIN_UPDATER_CHECK_INTERVAL_SECS {
+        bail!("updater.checkInterval must be at least {MIN_UPDATER_CHECK_INTERVAL_SECS} seconds");
+    }
+
+    let feed_url = raw
+        .feed_url
+        .unwrap_or_else(|| DEFAULT_UPDATER_FEED_URL.to_string());
+    let feed_url = normalize_updater_feed_url(&feed_url)?;
+
+    Ok(UpdaterConfig {
+        enabled: raw.enabled.unwrap_or(true),
+        check_interval: Duration::from_secs(check_interval_secs),
+        feed_url,
     })
 }
 
@@ -555,6 +616,21 @@ fn hcl_path(path: &Path) -> String {
         .replace('"', "\\\"")
 }
 
+fn normalize_updater_feed_url(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("updater.feedUrl must not be empty");
+    }
+
+    let parsed = url::Url::parse(trimmed)
+        .with_context(|| format!("updater.feedUrl must be a valid URL: {trimmed}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        bail!("updater.feedUrl must use http:// or https://");
+    }
+
+    Ok(trimmed.trim_end_matches('/').to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,10 +695,14 @@ image = {{
         let raw = default_hcl(&pictures);
         assert!(raw.contains("name = \"gradient_glossy\""));
         assert!(raw.contains("quality = \"low\""));
+        assert!(raw.contains("updater = {"));
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
         assert_eq!(cfg.image.timer.as_secs(), 10_800);
         assert_eq!(cfg.image.remote_update_timer.as_secs(), 7_200);
+        assert!(cfg.updater.enabled);
+        assert_eq!(cfg.updater.check_interval.as_secs(), 21_600);
+        assert_eq!(cfg.updater.feed_url, DEFAULT_UPDATER_FEED_URL);
         assert_eq!(cfg.image.sources.len(), 1);
 
         match &cfg.image.sources[0] {
@@ -907,9 +987,80 @@ image = {{
         let cfg = parse_from_str(raw, &tmp.path().join("aura.hcl")).unwrap();
         assert_eq!(cfg.image.timer.as_secs(), 300);
         assert_eq!(cfg.image.remote_update_timer.as_secs(), 3600);
+        assert!(cfg.updater.enabled);
+        assert_eq!(cfg.updater.check_interval.as_secs(), 21_600);
+        assert_eq!(cfg.updater.feed_url, DEFAULT_UPDATER_FEED_URL);
         assert_eq!(cfg.image.format, OutputFormat::Jpg);
         assert_eq!(cfg.image.jpeg_quality, 90);
         assert_eq!(cfg.image.sources.len(), 1);
+    }
+
+    #[test]
+    fn parses_explicit_updater_config() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+updater = {{
+  enabled = false
+  checkInterval = "45m"
+  feedUrl = "https://updates.example.com/aura/"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert!(!cfg.updater.enabled);
+        assert_eq!(cfg.updater.check_interval.as_secs(), 2_700);
+        assert_eq!(cfg.updater.feed_url, "https://updates.example.com/aura");
+    }
+
+    #[test]
+    fn rejects_invalid_updater_check_interval() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+updater = {{
+  checkInterval = "5m"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_updater_feed_scheme() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+updater = {{
+  feedUrl = "ftp://updates.example.com/aura"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
     }
 
     #[test]
