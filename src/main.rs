@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod cache;
 mod config;
 mod errors;
@@ -39,6 +41,7 @@ enum ActiveMode {
 struct CliOptions {
     config_path: PathBuf,
     tray_enabled: bool,
+    debug_terminal: bool,
     print_version: bool,
 }
 
@@ -47,8 +50,9 @@ async fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let options = parse_cli_options(&args)?;
 
-    print_version_banner();
+    ensure_debug_console(&options)?;
     if options.print_version {
+        print_version_banner();
         return Ok(());
     }
 
@@ -408,6 +412,43 @@ fn print_version_banner() {
     println!("{}", info.full_version_number(true));
 }
 
+#[cfg(windows)]
+fn ensure_debug_console(options: &CliOptions) -> Result<()> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
+
+    if !options.debug_terminal && !options.print_version {
+        return Ok(());
+    }
+
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0 {
+        return Ok(());
+    }
+
+    let attach_error = unsafe { GetLastError() };
+    if attach_error == ERROR_ACCESS_DENIED {
+        return Ok(());
+    }
+
+    if unsafe { AllocConsole() } != 0 {
+        return Ok(());
+    }
+
+    let alloc_error = unsafe { GetLastError() };
+    if alloc_error == ERROR_ACCESS_DENIED {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "failed to initialize console (attach_error={attach_error}, alloc_error={alloc_error})"
+    );
+}
+
+#[cfg(not(windows))]
+fn ensure_debug_console(_: &CliOptions) -> Result<()> {
+    Ok(())
+}
+
 async fn refresh_all_sources(sources: &mut [Box<dyn ImageSource>]) -> Result<Vec<ImageCandidate>> {
     refresh_sources_filtered(sources, |_| true, "full").await
 }
@@ -551,12 +592,17 @@ fn persist_state(
 
 fn parse_cli_options(args: &[String]) -> Result<CliOptions> {
     let mut tray_enabled = true;
+    let mut debug_terminal = false;
     let mut print_version = false;
     let mut config_arg: Option<String> = None;
 
     for arg in args {
         if arg == "--no-tray" {
             tray_enabled = false;
+            continue;
+        }
+        if arg == "--debug" {
+            debug_terminal = true;
             continue;
         }
         if arg == "--version" {
@@ -588,6 +634,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions> {
     Ok(CliOptions {
         config_path,
         tray_enabled,
+        debug_terminal,
         print_version,
     })
 }
@@ -684,6 +731,7 @@ mod tests {
     fn cli_defaults_to_tray_with_default_path() {
         let options = parse_cli_options(&[]).unwrap();
         assert!(options.tray_enabled);
+        assert!(!options.debug_terminal);
         assert!(!options.print_version);
         assert_eq!(options.config_path.file_name().unwrap(), "aura.hcl");
     }
@@ -692,12 +740,22 @@ mod tests {
     fn cli_supports_no_tray_flag() {
         let options = parse_cli_options(&["--no-tray".to_string()]).unwrap();
         assert!(!options.tray_enabled);
+        assert!(!options.debug_terminal);
+        assert!(!options.print_version);
+    }
+
+    #[test]
+    fn cli_supports_debug_flag() {
+        let options = parse_cli_options(&["--debug".to_string()]).unwrap();
+        assert!(options.tray_enabled);
+        assert!(options.debug_terminal);
         assert!(!options.print_version);
     }
 
     #[test]
     fn cli_supports_version_flag() {
         let options = parse_cli_options(&["--version".to_string()]).unwrap();
+        assert!(!options.debug_terminal);
         assert!(options.print_version);
         assert!(options.config_path.as_os_str().is_empty());
     }
@@ -708,5 +766,19 @@ mod tests {
             parse_cli_options(&["--version".to_string(), "--no-tray".to_string()]).unwrap();
         assert!(options.print_version);
         assert!(!options.tray_enabled);
+        assert!(!options.debug_terminal);
+    }
+
+    #[test]
+    fn cli_supports_debug_with_version_and_no_tray() {
+        let options = parse_cli_options(&[
+            "--debug".to_string(),
+            "--version".to_string(),
+            "--no-tray".to_string(),
+        ])
+        .unwrap();
+        assert!(options.print_version);
+        assert!(!options.tray_enabled);
+        assert!(options.debug_terminal);
     }
 }

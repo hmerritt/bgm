@@ -86,6 +86,9 @@ cargo run --release -- --no-tray
 # Run with an explicit config path
 cargo run --release -- /path/to/aura.hcl
 
+# Run with terminal logs visible (`--debug`)
+cargo run --release -- --debug
+
 # Print version information
 cargo run --release -- --version
 ```
@@ -93,6 +96,9 @@ cargo run --release -- --version
 ### Platform Notes
 
 - Windows: tray and wallpaper update flow are supported.
+- Windows launch behavior:
+    - Default launch uses the GUI subsystem and does not open a terminal window.
+    - `--debug` shows logs in a terminal (attaches to the current terminal when possible, otherwise opens a console window).
 - Windows shader mode: shaders are compiled at build time from `shaders/*` (excluding `shader_builder`) using rust-gpu.
 - Linux/macOS: check/test/build are supported for development; wallpaper apply is currently unsupported at runtime.
 
