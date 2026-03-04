@@ -11,6 +11,8 @@ permissions:
 jobs:
   release_windows:
     runs-on: windows-latest
+    env:
+      SQUIRREL_WINDOWS_VERSION: 2.0.1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,7 +71,7 @@ jobs:
         if: steps.tag_check.outputs.valid == 'true'
         shell: pwsh
         run: |
-          .\scripts\windows\package-squirrel.ps1 -Version "${{ github.ref_name }}"
+          .\scripts\windows\package-squirrel.ps1 -Version "${{ github.ref_name }}" -SquirrelWindowsVersion "$env:SQUIRREL_WINDOWS_VERSION"
 
       - name: Upload release assets
         if: steps.tag_check.outputs.valid == 'true'

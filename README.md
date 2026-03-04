@@ -70,8 +70,21 @@ updater = {
 ### Prerequisites
 
 - Rust stable toolchain (`rustup`, `cargo`)
+- Rust nightly `nightly-2025-10-28-x86_64-pc-windows-msvc`
 - Windows development: MSVC toolchain/Visual Studio Build Tools (C++ build tools)
 - Linux/macOS: standard native build tools (`clang`/`gcc` and linker)
+
+```sh
+rustup toolchain install nightly-2025-10-28-x86_64-pc-windows-msvc
+```
+
+```sh
+rustup component add rustc-dev --toolchain nightly-2025-10-28-x86_64-pc-windows-msvc
+```
+
+```sh
+rustup component add rust-src --toolchain nightly-2025-10-28-x86_64-pc-windows-msvc
+```
 
 ### Commands
 
@@ -104,6 +117,9 @@ cargo run --release -- --version
 
 # Build Squirrel installer/update artifacts
 pwsh -File scripts/windows/package-squirrel.ps1 -Version 1.2.3
+
+# Build with an explicit pinned Squirrel.Windows tool version
+pwsh -File scripts/windows/package-squirrel.ps1 -Version 1.2.3 -SquirrelWindowsVersion 2.0.1
 ```
 
 ### Platform Notes

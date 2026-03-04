@@ -4,7 +4,8 @@ param(
     [string]$BinaryPath = "target/release/aura.exe",
     [string]$OutputDir = "dist/squirrel",
     [string]$NuGetExe = "nuget",
-    [string]$SquirrelExe = ""
+    [string]$SquirrelExe = "",
+    [string]$SquirrelWindowsVersion = "2.0.1"
 )
 
 Set-StrictMode -Version Latest
@@ -27,7 +28,8 @@ function Resolve-SquirrelExecutable {
     param(
         [string]$ProvidedPath,
         [string]$NuGetPath,
-        [string]$ToolsDir
+        [string]$ToolsDir,
+        [string]$PackageVersion
     )
 
     if ($ProvidedPath) {
@@ -37,26 +39,85 @@ function Resolve-SquirrelExecutable {
         return (Resolve-Path -LiteralPath $ProvidedPath).Path
     }
 
-    $fromPath = Get-Command "Squirrel.exe" -ErrorAction SilentlyContinue
-    if ($fromPath) {
-        return $fromPath.Source
+    if (-not $PackageVersion) {
+        throw "Squirrel.Windows package version must be provided."
     }
 
     New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
     
     # Suppress the standard output to prevent pipeline pollution
-    & $NuGetPath install Squirrel.Windows -OutputDirectory $ToolsDir -ExcludeVersion -NonInteractive | Out-Null
+    & $NuGetPath install Squirrel.Windows -Version $PackageVersion -OutputDirectory $ToolsDir -ExcludeVersion -NonInteractive | Out-Null
     
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install Squirrel.Windows via NuGet."
+        throw "Failed to install Squirrel.Windows $PackageVersion via NuGet."
     }
 
     $candidate = Join-Path $ToolsDir "Squirrel.Windows\tools\Squirrel.exe"
     if (-not (Test-Path -LiteralPath $candidate)) {
-        throw "Unable to locate Squirrel.exe after installing Squirrel.Windows package."
+        throw "Unable to locate Squirrel.exe after installing Squirrel.Windows $PackageVersion package."
     }
 
     return $candidate
+}
+
+function Test-BinaryContainsAsciiText {
+    param(
+        [string]$Path,
+        [string]$Text
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Cannot scan missing file for marker: $Path"
+    }
+
+    $pattern = [System.Text.Encoding]::ASCII.GetBytes($Text)
+    if ($pattern.Length -eq 0) {
+        return $true
+    }
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $matchIndex = 0
+        while ($true) {
+            $nextByte = $stream.ReadByte()
+            if ($nextByte -eq -1) {
+                break
+            }
+
+            if ($nextByte -eq $pattern[$matchIndex]) {
+                $matchIndex++
+                if ($matchIndex -eq $pattern.Length) {
+                    return $true
+                }
+                continue
+            }
+
+            if ($nextByte -eq $pattern[0]) {
+                $matchIndex = 1
+            }
+            else {
+                $matchIndex = 0
+            }
+        }
+
+        return $false
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-BinaryHasNoDummyMarker {
+    param(
+        [string]$Path,
+        [string[]]$Markers
+    )
+
+    foreach ($marker in $Markers) {
+        if (Test-BinaryContainsAsciiText -Path $Path -Text $marker) {
+            throw "Detected dummy Squirrel marker in '$Path': '$marker'."
+        }
+    }
 }
 
 $repoRoot = Resolve-RepoRoot
@@ -94,7 +155,13 @@ New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
 New-Item -ItemType Directory -Path $outputFullPath -Force | Out-Null
 
 $nugetPath = Resolve-NuGetCommand -CommandName $NuGetExe
-$squirrelPath = Resolve-SquirrelExecutable -ProvidedPath $SquirrelExe -NuGetPath $nugetPath -ToolsDir $toolsDir
+$squirrelPath = Resolve-SquirrelExecutable -ProvidedPath $SquirrelExe -NuGetPath $nugetPath -ToolsDir $toolsDir -PackageVersion $SquirrelWindowsVersion
+$squirrelVersionInfo = (Get-Item -LiteralPath $squirrelPath).VersionInfo
+Write-Host "Using Squirrel.Windows package version: $SquirrelWindowsVersion"
+Write-Host "Using Squirrel executable: $squirrelPath"
+if ($squirrelVersionInfo) {
+    Write-Host ("Squirrel executable version: FileVersion={0}; ProductVersion={1}" -f $squirrelVersionInfo.FileVersion, $squirrelVersionInfo.ProductVersion)
+}
 
 Copy-Item -LiteralPath $binaryFullPath -Destination (Join-Path $inputDir "aura.exe") -Force
 Copy-Item -LiteralPath $packageIconSourcePath -Destination (Join-Path $inputDir "tray.png") -Force
@@ -142,6 +209,31 @@ while (-not $setupExists -and $retryCount -lt $maxRetries) {
 
 if (-not $setupExists) {
     throw "Squirrel setup executable was not found. It may not have generated, or it remains locked by an external process."
+}
+
+$releasesPath = Join-Path $outputFullPath "RELEASES"
+if (-not (Test-Path -LiteralPath $releasesPath)) {
+    throw "Squirrel RELEASES file was not generated: $releasesPath"
+}
+
+$releasePackages = @(Get-ChildItem -LiteralPath $outputFullPath -Filter "*.nupkg" -File)
+
+if (-not $releasePackages -or $releasePackages.Count -lt 1) {
+    throw "No Squirrel release .nupkg files were generated in '$outputFullPath'."
+}
+
+$dummyMarkers = @(
+    "This is a dummy update,exe",
+    "This is a dummy update.exe"
+)
+Assert-BinaryHasNoDummyMarker -Path $setupPath -Markers $dummyMarkers
+
+$updateExePath = Join-Path $outputFullPath "Update.exe"
+if (Test-Path -LiteralPath $updateExePath) {
+    Assert-BinaryHasNoDummyMarker -Path $updateExePath -Markers $dummyMarkers
+}
+else {
+    Write-Host "Update.exe was not emitted to release root; skipping marker scan for Update.exe."
 }
 
 $versionedSetup = Join-Path $outputFullPath ("aura-{0}-windows-installer.exe" -f $Version)

@@ -38,6 +38,12 @@ The release pipeline publishes both existing assets and Squirrel assets:
 
 These Squirrel artifacts are required for in-app self-update support.
 
+## Packaging Determinism
+
+- `scripts/windows/package-squirrel.ps1` installs a pinned `Squirrel.Windows` version for deterministic local/CI behavior.
+- CI sets this via `SQUIRREL_WINDOWS_VERSION` in `.github/workflows/release.yml`.
+- Packaging hard-fails if generated installer binaries contain known dummy `Update.exe` marker text.
+
 ## Runtime Self-Updates
 
 - `aura` checks for updates on startup and periodically in the background (default `6h`).
