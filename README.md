@@ -17,6 +17,10 @@ A simple, lightweight, wallpaper manager written in Rust.
 - Built-in self-updater for seemless updates
 - **Shader** mode which engages a GPU-accelerated shader renderer, allowing for live animated wallpapers
 
+https://github.com/user-attachments/assets/500d83a2-5c5e-4722-8a4e-b544f1f27784
+
+
+
 ## Example `aura.hcl` config file
 
 Default location is `~/.config/aura.hcl`
