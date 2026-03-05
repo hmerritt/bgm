@@ -1,3 +1,4 @@
+use crate::crash_ui;
 use anyhow::{Context, Result};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -91,6 +92,11 @@ mod windows_impl {
                     "failed to write crash text log: {error:#}"
                 );
             }
+            crash_ui::show_native_crash_dialog(
+                exception_code,
+                exception_address,
+                Some(paths.text_path.as_path()),
+            );
         } else {
             let _ = writeln!(
                 std::io::stderr(),
@@ -98,6 +104,7 @@ mod windows_impl {
                 exception_code,
                 exception_address,
             );
+            crash_ui::show_native_crash_dialog(exception_code, exception_address, None);
         }
 
         HANDLING_CRASH.store(false, Ordering::SeqCst);

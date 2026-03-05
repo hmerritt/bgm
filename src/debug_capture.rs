@@ -59,12 +59,8 @@ fn open_debug_log(path: &Path) -> Result<File> {
     let Some(parent) = path.parent() else {
         anyhow::bail!("debug log path has no parent directory");
     };
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create debug log directory {}",
-            parent.display()
-        )
-    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create debug log directory {}", parent.display()))?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)

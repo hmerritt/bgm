@@ -3,6 +3,7 @@
 mod cache;
 mod config;
 mod crash_capture;
+mod crash_ui;
 mod debug_capture;
 mod errors;
 mod image_pipeline;
@@ -79,18 +80,17 @@ async fn main() {
     } else {
         None
     };
-    if debug_requested {
-        debug_capture::install_debug_panic_hook();
-        if let Err(error) = crash_capture::install() {
-            let _ = writeln!(
-                std::io::stderr(),
-                "failed to initialize native crash capture: {error:#}"
-            );
-        }
+    crash_ui::install_panic_hook(debug_requested);
+    if let Err(error) = crash_capture::install() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "failed to initialize native crash capture: {error:#}"
+        );
     }
 
     if let Err(error) = run(args, debug_requested).await {
         let _ = writeln!(std::io::stderr(), "fatal error: {error:#}");
+        crash_ui::show_fatal_error_dialog(&format!("{error:#}"));
         std::process::exit(1);
     }
 }

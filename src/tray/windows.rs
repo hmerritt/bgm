@@ -381,7 +381,8 @@ unsafe fn show_context_menu(hwnd: HWND, data: &mut WindowData) {
 
         let app_version_label = wide_null(&app_version_value);
         let timer_label = wide_null(&format_stat_row("Timer", &timer_value));
-        let remote_update_label = wide_null(&format_stat_row("Remote Update", &remote_update_value));
+        let remote_update_label =
+            wide_null(&format_stat_row("Remote Update", &remote_update_value));
         let update_status_label = wide_null(&format_stat_row("Update Status", &app_update_value));
         let images_label = wide_null(&format_stat_row("Images", &images_value));
         let shown_label = wide_null(&format_stat_row("Shown", &shown_value));
@@ -687,7 +688,12 @@ unsafe fn update_update_status_menu_row(data: &mut WindowData, app_update_status
     menu_item.fMask = MIIM_STRING;
     menu_item.dwTypeData = data.update_status_menu_text_wide.as_mut_ptr();
 
-    SetMenuItemInfoW(data.active_menu, TRAY_UPDATE_STATUS_MENU_POSITION, 1, &menu_item) != 0
+    SetMenuItemInfoW(
+        data.active_menu,
+        TRAY_UPDATE_STATUS_MENU_POSITION,
+        1,
+        &menu_item,
+    ) != 0
 }
 
 unsafe fn set_check_for_updates_menu_enabled(
