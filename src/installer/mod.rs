@@ -2,6 +2,13 @@ use crate::errors::Result;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupRegistrationStatus {
+    SkippedNotInstalled,
+    AlreadyRegistered,
+    RegisteredNow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SquirrelEvent {
     Install,
     Updated,
@@ -45,7 +52,17 @@ pub fn locate_update_exe() -> Result<PathBuf> {
     windows_squirrel::locate_update_exe()
 }
 
+#[cfg(windows)]
+pub fn ensure_startup_registered() -> Result<StartupRegistrationStatus> {
+    windows_squirrel::ensure_startup_registered()
+}
+
 #[cfg(not(windows))]
 pub fn locate_update_exe() -> Result<PathBuf> {
     anyhow::bail!("squirrel updates are only supported on Windows")
+}
+
+#[cfg(not(windows))]
+pub fn ensure_startup_registered() -> Result<StartupRegistrationStatus> {
+    Ok(StartupRegistrationStatus::SkippedNotInstalled)
 }
