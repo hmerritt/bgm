@@ -263,7 +263,7 @@ renderer = "image"
 
 # Image mode options (used when renderer = "image")
 image = {{
-	# Image sources array. Multiple sources will be combined together to pick the next wallpaper from.
+	# Image sources. Multiple sources will be combined together to pick the next wallpaper from.
 	# Supported source types: "file" | "directory" | "rss"
 	sources = [
         {{ type = "directory", path = "{}", recursive = true, extensions = ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }}

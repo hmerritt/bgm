@@ -196,7 +196,7 @@ pub(crate) fn tray_stat_visibility(shader_active: bool) -> TrayStatVisibility {
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{spawn, try_acquire_single_instance};
+pub use windows::{spawn, try_acquire_single_instance, SingleInstanceGuard};
 
 #[cfg(not(windows))]
 pub struct TrayController;

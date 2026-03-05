@@ -255,6 +255,7 @@ async fn main() -> Result<()> {
                                 &state_store,
                                 &rotation,
                                 last_image_id.clone(),
+                                &mut _single_instance_guard,
                             ) {
                                 if let Some(renderer) = renderer.as_mut() {
                                     renderer.stop();
@@ -342,6 +343,7 @@ async fn main() -> Result<()> {
                                 &state_store,
                                 &rotation,
                                 last_image_id.clone(),
+                                &mut _single_instance_guard,
                             )
                         {
                             if let Some(renderer) = renderer.as_mut() {
@@ -476,6 +478,7 @@ async fn main() -> Result<()> {
                                 &state_store,
                                 &rotation,
                                 last_image_id.clone(),
+                                &mut _single_instance_guard,
                             )
                         {
                             if let Some(renderer) = renderer.as_mut() {
@@ -554,6 +557,7 @@ async fn main() -> Result<()> {
                                 &state_store,
                                 &rotation,
                                 last_image_id.clone(),
+                                &mut _single_instance_guard,
                             )
                         {
                             if let Some(renderer) = renderer.as_mut() {
@@ -615,6 +619,7 @@ fn restart_after_update(
     state_store: &StateStore,
     rotation: &RotationManager,
     last_image_id: Option<String>,
+    single_instance_guard: &mut Option<tray::SingleInstanceGuard>,
 ) -> bool {
     let Some(restart_context) = restart_context else {
         warn!("unable to restart after update: restart context is unavailable");
@@ -624,10 +629,32 @@ fn restart_after_update(
         warn!(error = %error, "failed to persist state before update restart");
         return false;
     }
+
+    let released_tray_guard = single_instance_guard.take();
+    if released_tray_guard.is_some() {
+        info!("released tray single-instance guard before relaunch");
+    }
+
     if let Err(error) = updater::restart_installed_app(restart_context) {
         warn!(error = %error, "failed to relaunch app after update install");
+        if released_tray_guard.is_some() {
+            match tray::try_acquire_single_instance() {
+                Ok(Some(guard)) => {
+                    *single_instance_guard = Some(guard);
+                    warn!("reacquired tray single-instance guard after relaunch failure");
+                }
+                Ok(None) => {
+                    warn!("failed to reacquire tray single-instance guard after relaunch failure: guard is already held");
+                }
+                Err(error) => {
+                    warn!(error = %error, "failed to reacquire tray single-instance guard after relaunch failure");
+                }
+            }
+        }
         return false;
     }
+
+    info!("relaunch command succeeded; exiting current process for update handoff");
     true
 }
 
