@@ -78,84 +78,220 @@ function Convert-PngToIco {
     Add-Type -AssemblyName System.Drawing
 
     $targetSize = [Math]::Min($Size, 256)
+    if ($targetSize -lt 256) {
+        throw "ICO max size must be at least 256 for Squirrel setup icon compatibility. Received: $Size"
+    }
+
+    $iconSizes = @(16, 20, 24, 32, 48, 64, 256)
     $sourceImage = [System.Drawing.Image]::FromFile($SourcePath)
     try {
-        $bitmap = New-Object System.Drawing.Bitmap(
-            $targetSize,
-            $targetSize,
-            [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
-        )
-        try {
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            try {
-                $graphics.Clear([System.Drawing.Color]::Transparent)
-                $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-                $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-                $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-                $graphics.DrawImage($sourceImage, 0, 0, $targetSize, $targetSize)
-            }
-            finally {
-                $graphics.Dispose()
+        $iconEntries = New-Object System.Collections.Generic.List[object]
+
+        foreach ($iconSize in $iconSizes) {
+            if ($iconSize -gt $targetSize) {
+                continue
             }
 
-            $pngStream = New-Object System.IO.MemoryStream
+            $bitmap = New-Object System.Drawing.Bitmap(
+                $iconSize,
+                $iconSize,
+                [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+            )
             try {
-                $bitmap.Save($pngStream, [System.Drawing.Imaging.ImageFormat]::Png)
-                $pngBytes = $pngStream.ToArray()
-
-                $destinationDirectory = Split-Path -Path $DestinationPath -Parent
-                if ($destinationDirectory) {
-                    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
-                }
-
-                $icoStream = [System.IO.File]::Open(
-                    $DestinationPath,
-                    [System.IO.FileMode]::Create,
-                    [System.IO.FileAccess]::Write,
-                    [System.IO.FileShare]::None
-                )
+                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
                 try {
-                    $writer = New-Object System.IO.BinaryWriter($icoStream)
-                    try {
-                        $entryWidth = if ($targetSize -ge 256) { [byte]0 } else { [byte]$targetSize }
-                        $entryHeight = if ($targetSize -ge 256) { [byte]0 } else { [byte]$targetSize }
-
-                        # ICONDIR
-                        $writer.Write([UInt16]0)
-                        $writer.Write([UInt16]1)
-                        $writer.Write([UInt16]1)
-
-                        # ICONDIRENTRY
-                        $writer.Write($entryWidth)
-                        $writer.Write($entryHeight)
-                        $writer.Write([byte]0)
-                        $writer.Write([byte]0)
-                        $writer.Write([UInt16]1)
-                        $writer.Write([UInt16]32)
-                        $writer.Write([UInt32]$pngBytes.Length)
-                        $writer.Write([UInt32]22)
-
-                        $writer.Write($pngBytes)
-                    }
-                    finally {
-                        $writer.Dispose()
-                    }
+                    $graphics.Clear([System.Drawing.Color]::Transparent)
+                    $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+                    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+                    $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                    $graphics.DrawImage($sourceImage, 0, 0, $iconSize, $iconSize)
                 }
                 finally {
-                    $icoStream.Dispose()
+                    $graphics.Dispose()
+                }
+
+                $pngStream = New-Object System.IO.MemoryStream
+                try {
+                    $bitmap.Save($pngStream, [System.Drawing.Imaging.ImageFormat]::Png)
+                    $pngBytes = $pngStream.ToArray()
+                    $iconEntries.Add([PSCustomObject]@{
+                            Size  = $iconSize
+                            Bytes = $pngBytes
+                        }) | Out-Null
+                }
+                finally {
+                    $pngStream.Dispose()
                 }
             }
             finally {
-                $pngStream.Dispose()
+                $bitmap.Dispose()
+            }
+        }
+
+        if ($iconEntries.Count -lt 1) {
+            throw "Failed to generate any ICO entries from source PNG: $SourcePath"
+        }
+
+        $destinationDirectory = Split-Path -Path $DestinationPath -Parent
+        if ($destinationDirectory) {
+            New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+        }
+
+        $icoStream = [System.IO.File]::Open(
+            $DestinationPath,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        try {
+            $writer = New-Object System.IO.BinaryWriter($icoStream)
+            try {
+                $entryCount = $iconEntries.Count
+                $imageOffset = 6 + (16 * $entryCount)
+
+                # ICONDIR
+                $writer.Write([UInt16]0)
+                $writer.Write([UInt16]1)
+                $writer.Write([UInt16]$entryCount)
+
+                # ICONDIRENTRY table
+                foreach ($entry in $iconEntries) {
+                    $entrySize = [int]$entry.Size
+                    $entryBytes = [byte[]]$entry.Bytes
+                    $entryWidth = if ($entrySize -ge 256) { [byte]0 } else { [byte]$entrySize }
+                    $entryHeight = if ($entrySize -ge 256) { [byte]0 } else { [byte]$entrySize }
+
+                    $writer.Write($entryWidth)
+                    $writer.Write($entryHeight)
+                    $writer.Write([byte]0)
+                    $writer.Write([byte]0)
+                    $writer.Write([UInt16]0)
+                    $writer.Write([UInt16]32)
+                    $writer.Write([UInt32]$entryBytes.Length)
+                    $writer.Write([UInt32]$imageOffset)
+
+                    $imageOffset += $entryBytes.Length
+                }
+
+                # Image payloads
+                foreach ($entry in $iconEntries) {
+                    $writer.Write([byte[]]$entry.Bytes)
+                }
+            }
+            finally {
+                $writer.Dispose()
             }
         }
         finally {
-            $bitmap.Dispose()
+            $icoStream.Dispose()
         }
     }
     finally {
         $sourceImage.Dispose()
+    }
+}
+
+function Get-IcoEntries {
+    param(
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Cannot read missing ICO file: $Path"
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 6) {
+        throw "ICO file is too small to contain a valid header: $Path"
+    }
+
+    $reserved = [System.BitConverter]::ToUInt16($bytes, 0)
+    $iconType = [System.BitConverter]::ToUInt16($bytes, 2)
+    $entryCount = [System.BitConverter]::ToUInt16($bytes, 4)
+
+    if ($reserved -ne 0 -or $iconType -ne 1) {
+        throw "Invalid ICO header in '$Path' (reserved=$reserved, type=$iconType)"
+    }
+
+    $directorySize = 6 + (16 * $entryCount)
+    if ($bytes.Length -lt $directorySize) {
+        throw "ICO directory table is truncated in '$Path'"
+    }
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    for ($index = 0; $index -lt $entryCount; $index++) {
+        $baseOffset = 6 + (16 * $index)
+        $rawWidth = [int]$bytes[$baseOffset]
+        $rawHeight = [int]$bytes[$baseOffset + 1]
+        $reserved = [int]$bytes[$baseOffset + 3]
+        $width = if ($rawWidth -eq 0) { 256 } else { $rawWidth }
+        $height = if ($rawHeight -eq 0) { 256 } else { $rawHeight }
+        $planes = [System.BitConverter]::ToUInt16($bytes, $baseOffset + 4)
+        $bitCount = [System.BitConverter]::ToUInt16($bytes, $baseOffset + 6)
+        $bytesInRes = [System.BitConverter]::ToUInt32($bytes, $baseOffset + 8)
+        $imageOffset = [System.BitConverter]::ToUInt32($bytes, $baseOffset + 12)
+
+        if (($imageOffset + $bytesInRes) -gt $bytes.Length) {
+            throw "ICO image entry #$index points past EOF in '$Path'"
+        }
+
+        $entries.Add([PSCustomObject]@{
+                Width      = $width
+                Height     = $height
+                Reserved   = $reserved
+                Planes     = $planes
+                BitCount   = $bitCount
+                BytesInRes = $bytesInRes
+                Offset     = $imageOffset
+            }) | Out-Null
+    }
+
+    return $entries
+}
+
+function Assert-IcoHasRequiredSizes {
+    param(
+        [string]$Path,
+        [int[]]$RequiredSizes = @(16, 32, 48, 256),
+        [int]$MinEntryCount = 6
+    )
+
+    $entries = @(Get-IcoEntries -Path $Path)
+    if ($entries.Count -lt $MinEntryCount) {
+        throw "ICO file '$Path' has $($entries.Count) entries; expected at least $MinEntryCount"
+    }
+
+    $availableSquareSizes = @(
+        $entries |
+        Where-Object { $_.Width -eq $_.Height } |
+        ForEach-Object { [int]$_.Width } |
+        Select-Object -Unique
+    )
+
+    foreach ($requiredSize in $RequiredSizes) {
+        if ($requiredSize -notin $availableSquareSizes) {
+            throw "ICO file '$Path' is missing required icon size ${requiredSize}x${requiredSize}"
+        }
+    }
+
+    foreach ($entry in $entries) {
+        if ($entry.BytesInRes -le 0) {
+            throw "ICO file '$Path' contains an empty image payload entry"
+        }
+    }
+
+    # Match metadata emitted by known-good Cargo-generated tray.ico entries.
+    foreach ($entry in $entries) {
+        if ($entry.Reserved -ne 0) {
+            throw "ICO file '$Path' has non-zero reserved field for entry size $($entry.Width)x$($entry.Height)"
+        }
+        if ($entry.Planes -ne 0) {
+            throw "ICO file '$Path' has unsupported planes field=$($entry.Planes) for entry size $($entry.Width)x$($entry.Height)"
+        }
+        if ($entry.BitCount -ne 32) {
+            throw "ICO file '$Path' has unsupported bitcount field=$($entry.BitCount) for entry size $($entry.Width)x$($entry.Height)"
+        }
     }
 }
 
@@ -266,6 +402,10 @@ Copy-Item -LiteralPath $binaryFullPath -Destination (Join-Path $inputDir "aura.e
 Copy-Item -LiteralPath $packageIconSourcePath -Destination (Join-Path $inputDir "tray.png") -Force
 $setupIconPath = Join-Path $inputDir "tray.ico"
 Convert-PngToIco -SourcePath (Join-Path $inputDir "tray.png") -DestinationPath $setupIconPath -Size 256
+Assert-IcoHasRequiredSizes -Path $setupIconPath -RequiredSizes @(16, 32, 48, 256) -MinEntryCount 6
+$appIconPath = Join-Path $inputDir "app.ico"
+Convert-PngToIco -SourcePath (Join-Path $inputDir "tray.png") -DestinationPath $appIconPath -Size 256
+Assert-IcoHasRequiredSizes -Path $appIconPath -RequiredSizes @(16, 32, 48, 256) -MinEntryCount 6
 
 & $nugetPath pack $nuspecPath -Version $Version -BasePath $inputDir -OutputDirectory $pkgDir -NoPackageAnalysis -NonInteractive
 if ($LASTEXITCODE -ne 0) {
@@ -329,12 +469,9 @@ $dummyMarkers = @(
 )
 Assert-BinaryHasNoDummyMarker -Path $setupPath -Markers $dummyMarkers
 
-$updateExePath = Join-Path $outputFullPath "Update.exe"
+$updateExePath = Join-Path $outputFullPath "Setup.exe"
 if (Test-Path -LiteralPath $updateExePath) {
     Assert-BinaryHasNoDummyMarker -Path $updateExePath -Markers $dummyMarkers
-}
-else {
-    Write-Host "Update.exe was not emitted to release root; skipping marker scan for Update.exe."
 }
 
 $versionedSetup = Join-Path $outputFullPath ("aura-{0}-windows-installer.exe" -f $Version)

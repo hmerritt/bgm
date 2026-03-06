@@ -3,6 +3,7 @@ use crate::installer::SquirrelEvent;
 use crate::installer::StartupRegistrationStatus;
 use crate::version::{APP_NAME, BINARY_FILENAME};
 use anyhow::Context;
+use std::fs;
 use std::ffi::OsStr;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
@@ -16,6 +17,7 @@ use windows_sys::Win32::System::Registry::{
 
 const UNINSTALL_REGISTRY_BASE: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
+const APP_ICON_FILENAME: &str = "app.ico";
 const PUBLISHER: &str = match option_env!("AURA_PUBLISHER") {
     Some(value) => value,
     None => "",
@@ -38,7 +40,16 @@ pub fn handle(event: SquirrelEvent) -> Result<bool> {
 }
 
 pub fn ensure_startup_registered() -> Result<StartupRegistrationStatus> {
-    let update_exe = locate_update_exe_if_installed()?;
+    let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let update_exe = locate_update_exe_if_installed_from_current_exe(&current_exe)?;
+    if update_exe.is_some() {
+        if let Err(error) = sync_app_icon_to_squirrel_root(&current_exe) {
+            tracing::warn!(
+                error = %error,
+                "failed to sync root app.ico during startup registration check"
+            );
+        }
+    }
     let startup_shortcut_path = startup_shortcut_path()?;
     let startup_shortcut_exists = startup_shortcut_path.exists();
     ensure_startup_registered_inner(
@@ -124,9 +135,8 @@ pub(crate) fn locate_update_exe() -> Result<PathBuf> {
     Ok(update_exe)
 }
 
-fn locate_update_exe_if_installed() -> Result<Option<PathBuf>> {
-    let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let update_exe = update_exe_path_from_current_exe(&current_exe)?;
+fn locate_update_exe_if_installed_from_current_exe(current_exe: &Path) -> Result<Option<PathBuf>> {
+    let update_exe = update_exe_path_from_current_exe(current_exe)?;
     if update_exe.exists() {
         return Ok(Some(update_exe));
     }
@@ -134,18 +144,7 @@ fn locate_update_exe_if_installed() -> Result<Option<PathBuf>> {
 }
 
 fn update_exe_path_from_current_exe(current_exe: &Path) -> Result<PathBuf> {
-    let app_dir = current_exe.parent().with_context(|| {
-        format!(
-            "failed to resolve app directory for {}",
-            current_exe.display()
-        )
-    })?;
-    let root_dir = app_dir.parent().with_context(|| {
-        format!(
-            "failed to resolve squirrel root directory from {}",
-            app_dir.display()
-        )
-    })?;
+    let root_dir = squirrel_root_dir_from_current_exe(current_exe)?;
     Ok(root_dir.join("Update.exe"))
 }
 
@@ -224,7 +223,7 @@ fn binary_filename_with_extension() -> String {
 fn upsert_uninstall_registry_metadata() -> Result<()> {
     let current_exe = std::env::current_exe()
         .context("failed to resolve current executable for uninstall registry metadata")?;
-    let display_icon = display_icon_value(&current_exe);
+    let display_icon = resolve_display_icon_value(&current_exe);
     let publisher = publisher_value()?;
 
     with_uninstall_registry_key(|key| {
@@ -239,8 +238,95 @@ fn uninstall_registry_subkey() -> String {
     format!(r"{UNINSTALL_REGISTRY_BASE}\{APP_NAME}")
 }
 
-fn display_icon_value(current_exe: &Path) -> String {
+fn resolve_display_icon_value(current_exe: &Path) -> String {
+    if let Ok(icon_path) = sync_app_icon_to_squirrel_root(current_exe) {
+        return display_icon_value_for_icon_file(&icon_path);
+    }
+
+    if let Ok(root_icon_path) = app_icon_destination_path_from_current_exe(current_exe) {
+        if root_icon_path.exists() {
+            return display_icon_value_for_icon_file(&root_icon_path);
+        }
+    }
+
+    if let Ok(version_icon_path) = app_icon_source_path_from_current_exe(current_exe) {
+        if version_icon_path.exists() {
+            return display_icon_value_for_icon_file(&version_icon_path);
+        }
+    }
+
+    display_icon_value_for_executable(current_exe)
+}
+
+fn squirrel_root_dir_from_current_exe(current_exe: &Path) -> Result<PathBuf> {
+    let app_dir = current_exe.parent().with_context(|| {
+        format!(
+            "failed to resolve app directory for {}",
+            current_exe.display()
+        )
+    })?;
+
+    // Prefer the nearest ancestor containing Update.exe.
+    if let Some(root_dir) = app_dir
+        .ancestors()
+        .find(|candidate| candidate.join("Update.exe").exists())
+    {
+        return Ok(root_dir.to_path_buf());
+    }
+
+    // Fallback to standard Squirrel app-version layout.
+    let root_dir = app_dir.parent().with_context(|| {
+        format!(
+            "failed to resolve squirrel root directory from {}",
+            app_dir.display()
+        )
+    })?;
+    Ok(root_dir.to_path_buf())
+}
+
+fn app_icon_source_path_from_current_exe(current_exe: &Path) -> Result<PathBuf> {
+    let app_dir = current_exe.parent().with_context(|| {
+        format!(
+            "failed to resolve app directory for {}",
+            current_exe.display()
+        )
+    })?;
+    Ok(app_dir.join(APP_ICON_FILENAME))
+}
+
+fn app_icon_destination_path_from_current_exe(current_exe: &Path) -> Result<PathBuf> {
+    let root_dir = squirrel_root_dir_from_current_exe(current_exe)?;
+    Ok(root_dir.join(APP_ICON_FILENAME))
+}
+
+fn sync_app_icon_to_squirrel_root(current_exe: &Path) -> Result<PathBuf> {
+    let source = app_icon_source_path_from_current_exe(current_exe)?;
+    let destination = app_icon_destination_path_from_current_exe(current_exe)?;
+
+    if !source.exists() {
+        anyhow::bail!(
+            "packaged app icon does not exist at {}; cannot refresh root app icon",
+            source.display()
+        );
+    }
+
+    fs::copy(&source, &destination).with_context(|| {
+        format!(
+            "failed to copy app icon from {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+
+    Ok(destination)
+}
+
+fn display_icon_value_for_executable(current_exe: &Path) -> String {
     format!("{},0", current_exe.display())
+}
+
+fn display_icon_value_for_icon_file(icon_path: &Path) -> String {
+    icon_path.display().to_string()
 }
 
 fn publisher_value() -> Result<String> {
@@ -380,6 +466,93 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_source_path_resolves_from_current_exe_layout() {
+        let current_exe = Path::new(r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe");
+        let source = app_icon_source_path_from_current_exe(current_exe).unwrap();
+        assert_eq!(
+            source,
+            PathBuf::from(r"C:\Users\alice\AppData\Local\aura\app-1.2.3\app.ico")
+        );
+    }
+
+    #[test]
+    fn app_icon_destination_path_resolves_to_squirrel_root() {
+        let current_exe = Path::new(r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe");
+        let destination = app_icon_destination_path_from_current_exe(current_exe).unwrap();
+        assert_eq!(
+            destination,
+            PathBuf::from(r"C:\Users\alice\AppData\Local\aura\app.ico")
+        );
+    }
+
+    #[test]
+    fn sync_app_icon_to_squirrel_root_copies_icon_file() {
+        let tmp = tempdir().unwrap();
+        let app_dir = tmp.path().join("app-1.2.3");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let current_exe = app_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+        let source_icon = app_dir.join("app.ico");
+        std::fs::write(&source_icon, b"icon-data").unwrap();
+
+        let copied = sync_app_icon_to_squirrel_root(&current_exe).unwrap();
+        assert_eq!(copied, tmp.path().join("app.ico"));
+        assert_eq!(std::fs::read(copied).unwrap(), b"icon-data");
+    }
+
+    #[test]
+    fn resolve_display_icon_value_falls_back_to_executable_when_app_icon_missing() {
+        let tmp = tempdir().unwrap();
+        let app_dir = tmp.path().join("app-1.2.3");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let current_exe = app_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+
+        let value = resolve_display_icon_value(&current_exe);
+        assert_eq!(value, format!("{},0", current_exe.display()));
+    }
+
+    #[test]
+    fn resolve_display_icon_value_falls_back_to_existing_root_icon_when_sync_fails() {
+        let tmp = tempdir().unwrap();
+        let app_dir = tmp.path().join("app-1.2.3");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let current_exe = app_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+        std::fs::write(tmp.path().join("app.ico"), b"root-icon").unwrap();
+
+        let value = resolve_display_icon_value(&current_exe);
+        assert_eq!(value, tmp.path().join("app.ico").display().to_string());
+    }
+
+    #[test]
+    fn squirrel_root_dir_prefers_nearest_update_exe_ancestor() {
+        let tmp = tempdir().unwrap();
+        let root_dir = tmp.path().join("aura");
+        let app_dir = root_dir.join("app-1.2.3");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(root_dir.join("Update.exe"), b"update").unwrap();
+        let current_exe = app_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+
+        let root = squirrel_root_dir_from_current_exe(&current_exe).unwrap();
+        assert_eq!(root, root_dir);
+    }
+
+    #[test]
+    fn squirrel_root_dir_supports_root_executable_layout_with_update_exe() {
+        let tmp = tempdir().unwrap();
+        let root_dir = tmp.path().join("aura");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        std::fs::write(root_dir.join("Update.exe"), b"update").unwrap();
+        let current_exe = root_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+
+        let root = squirrel_root_dir_from_current_exe(&current_exe).unwrap();
+        assert_eq!(root, root_dir);
+    }
+
+    #[test]
     fn uninstall_registry_subkey_is_app_specific() {
         assert_eq!(
             uninstall_registry_subkey(),
@@ -388,11 +561,20 @@ mod tests {
     }
 
     #[test]
-    fn display_icon_value_appends_icon_index() {
+    fn display_icon_value_for_executable_appends_icon_index() {
         let exe_path = Path::new(r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe");
         assert_eq!(
-            display_icon_value(exe_path),
+            display_icon_value_for_executable(exe_path),
             r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe,0"
+        );
+    }
+
+    #[test]
+    fn display_icon_value_for_icon_file_uses_plain_path() {
+        let icon_path = Path::new(r"C:\Users\alice\AppData\Local\aura\app.ico");
+        assert_eq!(
+            display_icon_value_for_icon_file(icon_path),
+            r"C:\Users\alice\AppData\Local\aura\app.ico"
         );
     }
 }
