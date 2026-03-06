@@ -57,6 +57,7 @@ shader = {
 	mouse_enabled = false
 	quality = "medium" # "vlow" | "low" | "medium" | "high"
 	desktop_scope = "virtual" # "virtual" | "primary"
+	color_space = "unorm" # "unorm" | "srgb"
 }
 
 # App update settings (Windows + Squirrel install only)

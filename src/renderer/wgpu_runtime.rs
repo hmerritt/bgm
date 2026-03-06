@@ -1,5 +1,5 @@
 use super::desktop_windows::DesktopRect;
-use crate::config::{ShaderConfig, ShaderPowerPreference};
+use crate::config::{ShaderColorSpace, ShaderConfig, ShaderPowerPreference};
 use crate::errors::Result;
 use anyhow::{anyhow, bail, Context};
 use bytemuck::{Pod, Zeroable};
@@ -73,12 +73,19 @@ impl WgpuRuntime {
         if caps.formats.is_empty() {
             bail!("adapter reported no surface formats");
         }
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
+        let format = pick_surface_format(shader_config.color_space, &caps.formats);
+        if shader_config.color_space == ShaderColorSpace::Unorm && format.is_srgb() {
+            tracing::warn!(
+                color_space = ?shader_config.color_space,
+                surface_format = ?format,
+                "non-srgb surface format was requested but unavailable; falling back to sRGB"
+            );
+        }
+        tracing::info!(
+            color_space = ?shader_config.color_space,
+            surface_format = ?format,
+            "shader runtime surface color format selected"
+        );
         let alpha_mode = caps
             .alpha_modes
             .first()
@@ -310,6 +317,41 @@ fn create_pipeline(
     Ok((uniform_buffer, bind_group, pipeline))
 }
 
+fn pick_surface_format(
+    color_space: ShaderColorSpace,
+    formats: &[wgpu::TextureFormat],
+) -> wgpu::TextureFormat {
+    match color_space {
+        ShaderColorSpace::Unorm => pick_unorm_surface_format(formats),
+        ShaderColorSpace::Srgb => formats
+            .iter()
+            .copied()
+            .find(|format| format.is_srgb())
+            .unwrap_or(formats[0]),
+    }
+}
+
+fn pick_unorm_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
+    if let Some(format) = formats
+        .iter()
+        .copied()
+        .find(|format| *format == wgpu::TextureFormat::Bgra8Unorm)
+    {
+        return format;
+    }
+    if let Some(format) = formats
+        .iter()
+        .copied()
+        .find(|format| *format == wgpu::TextureFormat::Rgba8Unorm)
+    {
+        return format;
+    }
+    if let Some(format) = formats.iter().copied().find(|format| !format.is_srgb()) {
+        return format;
+    }
+    formats[0]
+}
+
 fn load_spirv_words(bytes: &[u8]) -> Result<Vec<u32>> {
     if bytes.len() % 4 != 0 {
         bail!("embedded shader binary size is not a multiple of 4");
@@ -345,5 +387,35 @@ mod tests {
     fn converts_bytes_to_megabytes() {
         let mb = bytes_to_megabytes(83_886_080);
         assert!((mb - 80.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn picks_unorm_format_when_requested() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ];
+        let chosen = pick_surface_format(ShaderColorSpace::Unorm, &formats);
+        assert_eq!(chosen, wgpu::TextureFormat::Bgra8Unorm);
+    }
+
+    #[test]
+    fn picks_srgb_format_when_requested() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ];
+        let chosen = pick_surface_format(ShaderColorSpace::Srgb, &formats);
+        assert_eq!(chosen, wgpu::TextureFormat::Rgba8UnormSrgb);
+    }
+
+    #[test]
+    fn falls_back_when_unorm_is_unavailable() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ];
+        let chosen = pick_surface_format(ShaderColorSpace::Unorm, &formats);
+        assert_eq!(chosen, wgpu::TextureFormat::Bgra8UnormSrgb);
     }
 }

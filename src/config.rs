@@ -16,6 +16,7 @@ const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
 const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
 const LEGACY_SHADER_NAME: &str = "gradient_shader";
 const DEFAULT_SHADER_QUALITY: ShaderQualityPreset = ShaderQualityPreset::Medium;
+const DEFAULT_SHADER_COLOR_SPACE: ShaderColorSpace = ShaderColorSpace::Unorm;
 const DEFAULT_MAX_CACHE_MB: u64 = 1024;
 const DEFAULT_MAX_CACHE_AGE_DAYS: u64 = 30;
 const DEFAULT_UPDATER_FEED_URL: &str = "https://github.com/hmerritt/aura/releases/latest/download";
@@ -55,6 +56,13 @@ pub enum ShaderPowerPreference {
 pub enum ShaderDesktopScope {
     Virtual,
     Primary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShaderColorSpace {
+    Unorm,
+    Srgb,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -107,6 +115,7 @@ struct RawShaderConfig {
     mouse_enabled: Option<bool>,
     quality: Option<ShaderQualityPreset>,
     desktop_scope: Option<ShaderDesktopScope>,
+    color_space: Option<ShaderColorSpace>,
     #[serde(rename = "memory_target_mb")]
     _memory_target_mb: Option<hcl::Value>,
     #[serde(rename = "power_preference")]
@@ -239,6 +248,7 @@ pub struct ShaderConfig {
     pub mouse_enabled: bool,
     pub quality: ShaderQualityPreset,
     pub desktop_scope: ShaderDesktopScope,
+    pub color_space: ShaderColorSpace,
 }
 
 pub fn load_from_path(path: &Path) -> Result<AuraConfig> {
@@ -285,6 +295,7 @@ shader = {{
 	mouse_enabled = false
 	quality = "low" # "vlow" | "low" | "medium" | "high"
 	desktop_scope = "virtual" # "virtual" | "primary"
+	color_space = "unorm" # "unorm" | "srgb"
 }}
 
 # App update settings (Windows + Squirrel install only)
@@ -462,6 +473,7 @@ fn parse_shader_config(
                 mouse_enabled: false,
                 quality: DEFAULT_SHADER_QUALITY,
                 desktop_scope: ShaderDesktopScope::Virtual,
+                color_space: DEFAULT_SHADER_COLOR_SPACE,
             }));
         }
         return Ok(None);
@@ -492,6 +504,7 @@ fn parse_shader_config(
         mouse_enabled: raw.mouse_enabled.unwrap_or(false),
         quality: raw.quality.unwrap_or(DEFAULT_SHADER_QUALITY),
         desktop_scope: raw.desktop_scope.unwrap_or(ShaderDesktopScope::Virtual),
+        color_space: raw.color_space.unwrap_or(DEFAULT_SHADER_COLOR_SPACE),
     }))
 }
 
@@ -695,6 +708,7 @@ image = {{
         let raw = default_hcl(&pictures);
         assert!(raw.contains("name = \"gradient_glossy\""));
         assert!(raw.contains("quality = \"low\""));
+        assert!(raw.contains("color_space = \"unorm\""));
         assert!(raw.contains("updater = {"));
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
@@ -714,6 +728,9 @@ image = {{
             }
             _ => panic!("expected directory source in generated config"),
         }
+
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
 
     #[test]
@@ -750,6 +767,7 @@ shader = {{
         assert!(shader.mouse_enabled);
         assert_eq!(shader.quality, DEFAULT_SHADER_QUALITY);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
+        assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
 
     #[test]
@@ -776,6 +794,7 @@ shader = {{
         assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.quality, DEFAULT_SHADER_QUALITY);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
+        assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
 
     #[test]
@@ -803,6 +822,7 @@ shader = {{
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.quality, ShaderQualityPreset::High);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Primary);
+        assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
 
     #[test]
@@ -819,6 +839,51 @@ image = {{
 }}
 shader = {{
   quality = "ultra"
+}}
+"#,
+            hcl_path(&dir)
+        );
+        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+    }
+
+    #[test]
+    fn parses_shader_color_space_options() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+shader = {{
+  color_space = "srgb"
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.color_space, ShaderColorSpace::Srgb);
+    }
+
+    #[test]
+    fn rejects_invalid_shader_color_space_options() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+shader = {{
+  color_space = "display_p3"
 }}
 "#,
             hcl_path(&dir)
