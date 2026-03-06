@@ -355,6 +355,44 @@ function Assert-BinaryHasNoDummyMarker {
     }
 }
 
+function Wait-FileReadable {
+    param(
+        [string]$Path,
+        [int]$TimeoutSeconds = 60,
+        [int]$PollMilliseconds = 250
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $Path) {
+            try {
+                $stream = [System.IO.File]::Open(
+                    $Path,
+                    [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read,
+                    [System.IO.FileShare]::ReadWrite
+                )
+                try {
+                    if ($stream.Length -gt 0) {
+                        return
+                    }
+                }
+                finally {
+                    $stream.Dispose()
+                }
+            }
+            catch {
+                # Keep polling until the file is no longer exclusively locked.
+            }
+        }
+
+        Start-Sleep -Milliseconds $PollMilliseconds
+    }
+
+    throw "Timed out waiting for readable file: $Path"
+}
+
 $repoRoot = Resolve-RepoRoot
 $binaryFullPath = Join-Path $repoRoot $BinaryPath
 $outputFullPath = Join-Path $repoRoot $OutputDir
@@ -426,31 +464,22 @@ if (-not $nupkgPath) {
     throw "No NuGet package was generated."
 }
 
-& $squirrelPath --releasify $nupkgPath --releaseDir $outputFullPath --setupIcon $setupIconPath --no-msi
-if ($LASTEXITCODE -ne 0) {
-    throw "Squirrel releasify failed."
+$squirrelArgs = @(
+    "--releasify",
+    $nupkgPath,
+    "--releaseDir",
+    $outputFullPath,
+    "--setupIcon",
+    $setupIconPath,
+    "--no-msi"
+)
+$squirrelProcess = Start-Process -FilePath $squirrelPath -ArgumentList $squirrelArgs -PassThru -Wait
+if ($squirrelProcess.ExitCode -ne 0) {
+    throw "Squirrel releasify failed with exit code $($squirrelProcess.ExitCode)."
 }
 
 $setupPath = Join-Path $outputFullPath "Setup.exe"
-
-# Polling loop to mitigate file system / Antivirus locking race conditions
-$maxRetries = 10
-$retryCount = 0
-$setupExists = $false
-
-while (-not $setupExists -and $retryCount -lt $maxRetries) {
-    if (Test-Path -LiteralPath $setupPath) {
-        $setupExists = $true
-    }
-    else {
-        Start-Sleep -Milliseconds 500
-        $retryCount++
-    }
-}
-
-if (-not $setupExists) {
-    throw "Squirrel setup executable was not found. It may not have generated, or it remains locked by an external process."
-}
+Wait-FileReadable -Path $setupPath -TimeoutSeconds 90 -PollMilliseconds 250
 
 $releasesPath = Join-Path $outputFullPath "RELEASES"
 if (-not (Test-Path -LiteralPath $releasesPath)) {
@@ -463,19 +492,48 @@ if (-not $releasePackages -or $releasePackages.Count -lt 1) {
     throw "No Squirrel release .nupkg files were generated in '$outputFullPath'."
 }
 
+$templateSetupPath = Join-Path (Split-Path -Parent $squirrelPath) "Setup.exe"
+if (-not (Test-Path -LiteralPath $templateSetupPath)) {
+    throw "Squirrel template Setup.exe was not found: $templateSetupPath"
+}
+
+$setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash
+$templateSetupHash = (Get-FileHash -LiteralPath $templateSetupPath -Algorithm SHA256).Hash
+if ($setupHash -eq $templateSetupHash) {
+    throw "Generated Setup.exe matches Squirrel template Setup.exe; releasify output was not embedded."
+}
+
+$setupSize = (Get-Item -LiteralPath $setupPath).Length
+$templateSetupSize = (Get-Item -LiteralPath $templateSetupPath).Length
+$largestReleasePackage = $releasePackages | Sort-Object Length -Descending | Select-Object -First 1
+$minimumExpectedSetupSize = [Math]::Max(
+    $templateSetupSize + 65536,
+    [int][Math]::Floor($largestReleasePackage.Length * 0.20)
+)
+if ($setupSize -lt $minimumExpectedSetupSize) {
+    throw "Generated Setup.exe appears too small ($setupSize bytes). Expected at least $minimumExpectedSetupSize bytes based on release package size $($largestReleasePackage.Length)."
+}
+
 $dummyMarkers = @(
     "This is a dummy update,exe",
     "This is a dummy update.exe"
 )
 Assert-BinaryHasNoDummyMarker -Path $setupPath -Markers $dummyMarkers
 
-$updateExePath = Join-Path $outputFullPath "Setup.exe"
+$updateExePath = Join-Path $outputFullPath "Update.exe"
 if (Test-Path -LiteralPath $updateExePath) {
     Assert-BinaryHasNoDummyMarker -Path $updateExePath -Markers $dummyMarkers
+}
+else {
+    Write-Host "Update.exe was not emitted to release root; skipping marker scan for Update.exe."
 }
 
 $versionedSetup = Join-Path $outputFullPath ("aura-{0}-windows-installer.exe" -f $Version)
 Copy-Item -LiteralPath $setupPath -Destination $versionedSetup -Force
+$versionedSetupHash = (Get-FileHash -LiteralPath $versionedSetup -Algorithm SHA256).Hash
+if ($versionedSetupHash -ne $setupHash) {
+    throw "Versioned installer hash mismatch; copied installer does not match Setup.exe."
+}
 $versionedInstallerZip = Join-Path $outputFullPath ("aura-{0}-windows-installer.zip" -f $Version)
 Compress-Archive -Path $versionedSetup -DestinationPath $versionedInstallerZip -Force
 

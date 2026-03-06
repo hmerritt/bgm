@@ -42,7 +42,8 @@ These Squirrel artifacts are required for in-app self-update support.
 
 - `scripts/windows/package-squirrel.ps1` installs a pinned `Squirrel.Windows` version for deterministic local/CI behavior.
 - CI sets this via `SQUIRREL_WINDOWS_VERSION` in `.github/workflows/release.yml`.
-- Packaging hard-fails if generated installer binaries contain known dummy `Update.exe` marker text.
+- Packaging runs `Squirrel.exe --releasify` as a blocking process and waits for a readable `Setup.exe` before post-processing.
+- Packaging hard-fails if `Setup.exe` matches the Squirrel template binary, is unexpectedly small for the emitted release package, or contains known dummy marker text.
 
 ## Runtime Self-Updates
 

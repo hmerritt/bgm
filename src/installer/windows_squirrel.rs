@@ -26,8 +26,21 @@ const PUBLISHER: &str = match option_env!("AURA_PUBLISHER") {
 pub fn handle(event: SquirrelEvent) -> Result<bool> {
     match event {
         SquirrelEvent::Install | SquirrelEvent::Updated => {
-            create_startup_and_start_menu_shortcuts()?;
-            upsert_uninstall_registry_metadata()?;
+            let shortcut_result = create_startup_and_start_menu_shortcuts();
+            let metadata_result = upsert_uninstall_registry_metadata();
+
+            match (shortcut_result, metadata_result) {
+                (Ok(()), Ok(())) => {}
+                (Err(shortcut_error), Ok(())) => return Err(shortcut_error),
+                (Ok(()), Err(metadata_error)) => return Err(metadata_error),
+                (Err(shortcut_error), Err(metadata_error)) => {
+                    anyhow::bail!(
+                        "failed to create startup/start menu shortcuts: {shortcut_error:#}; \
+                         additionally failed to upsert uninstall registry metadata: {metadata_error:#}"
+                    );
+                }
+            }
+
             Ok(true)
         }
         SquirrelEvent::Uninstall => {
@@ -47,6 +60,12 @@ pub fn ensure_startup_registered() -> Result<StartupRegistrationStatus> {
             tracing::warn!(
                 error = %error,
                 "failed to sync root app.ico during startup registration check"
+            );
+        }
+        if let Err(error) = upsert_uninstall_registry_metadata_for_current_exe(&current_exe) {
+            tracing::warn!(
+                error = %error,
+                "failed to upsert uninstall registry metadata during startup registration check"
             );
         }
     }
@@ -223,13 +242,25 @@ fn binary_filename_with_extension() -> String {
 fn upsert_uninstall_registry_metadata() -> Result<()> {
     let current_exe = std::env::current_exe()
         .context("failed to resolve current executable for uninstall registry metadata")?;
-    let display_icon = resolve_display_icon_value(&current_exe);
-    let publisher = publisher_value()?;
+    upsert_uninstall_registry_metadata_for_current_exe(&current_exe)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UninstallRegistryMetadata {
+    display_icon: String,
+    display_version: String,
+    publisher: Option<String>,
+}
+
+fn upsert_uninstall_registry_metadata_for_current_exe(current_exe: &Path) -> Result<()> {
+    let metadata = build_uninstall_registry_metadata(current_exe, PUBLISHER);
 
     with_uninstall_registry_key(|key| {
-        set_registry_string_value(key, "DisplayIcon", &display_icon)?;
-        set_registry_string_value(key, "DisplayVersion", DISPLAY_VERSION)?;
-        set_registry_string_value(key, "Publisher", &publisher)?;
+        set_registry_string_value(key, "DisplayIcon", &metadata.display_icon)?;
+        set_registry_string_value(key, "DisplayVersion", &metadata.display_version)?;
+        if let Some(publisher) = metadata.publisher.as_deref() {
+            set_registry_string_value(key, "Publisher", publisher)?;
+        }
         Ok(())
     })
 }
@@ -329,12 +360,23 @@ fn display_icon_value_for_icon_file(icon_path: &Path) -> String {
     icon_path.display().to_string()
 }
 
-fn publisher_value() -> Result<String> {
-    let value = PUBLISHER.trim();
-    if value.is_empty() {
-        anyhow::bail!("AURA_PUBLISHER is empty; cannot write uninstall Publisher");
+fn build_uninstall_registry_metadata(
+    current_exe: &Path,
+    publisher_raw: &str,
+) -> UninstallRegistryMetadata {
+    UninstallRegistryMetadata {
+        display_icon: resolve_display_icon_value(current_exe),
+        display_version: DISPLAY_VERSION.to_string(),
+        publisher: normalize_publisher_value(publisher_raw),
     }
-    Ok(value.to_string())
+}
+
+fn normalize_publisher_value(raw_value: &str) -> Option<String> {
+    let value = raw_value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 fn with_uninstall_registry_key<F>(write_values: F) -> Result<()>
@@ -576,5 +618,34 @@ mod tests {
             display_icon_value_for_icon_file(icon_path),
             r"C:\Users\alice\AppData\Local\aura\app.ico"
         );
+    }
+
+    #[test]
+    fn normalize_publisher_value_returns_none_for_empty_input() {
+        assert_eq!(normalize_publisher_value(""), None);
+        assert_eq!(normalize_publisher_value("   "), None);
+    }
+
+    #[test]
+    fn normalize_publisher_value_trims_non_empty_input() {
+        assert_eq!(
+            normalize_publisher_value("  Aura Publisher  "),
+            Some("Aura Publisher".to_string())
+        );
+    }
+
+    #[test]
+    fn build_uninstall_registry_metadata_omits_empty_publisher_and_keeps_required_fields() {
+        let tmp = tempdir().unwrap();
+        let app_dir = tmp.path().join("app-1.2.3");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let current_exe = app_dir.join("aura.exe");
+        std::fs::write(&current_exe, b"exe").unwrap();
+
+        let metadata = build_uninstall_registry_metadata(&current_exe, "   ");
+
+        assert_eq!(metadata.display_icon, format!("{},0", current_exe.display()));
+        assert_eq!(metadata.display_version, DISPLAY_VERSION);
+        assert_eq!(metadata.publisher, None);
     }
 }
