@@ -1,6 +1,6 @@
 use super::desktop_windows::{
-    attach_window_to_desktop, cursor_position_for_scope, place_window_over_desktop,
-    show_desktop_window,
+    attach_window_to_desktop, cursor_position_for_scope, desktop_rect_for_scope,
+    place_window_over_desktop, show_desktop_window, DesktopRect,
 };
 use super::precompiled;
 use super::wgpu_runtime::WgpuRuntime;
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use windows_sys::Win32::Foundation::HWND;
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::windows::EventLoopBuilderExtWindows;
@@ -127,6 +128,9 @@ struct RendererApp {
     paused: bool,
     enabled: bool,
     next_frame_at: Instant,
+    next_geometry_poll_at: Instant,
+    geometry_poll_interval: Duration,
+    last_desktop_rect: Option<DesktopRect>,
     frame_interval: Duration,
     shader_bytes: &'static [u8],
 }
@@ -137,8 +141,12 @@ impl RendererApp {
         shader_bytes: &'static [u8],
         event_tx: UnboundedSender<RendererEvent>,
     ) -> Self {
+        let geometry_poll_interval = Duration::from_millis(1000);
         Self {
             frame_interval: Duration::from_secs_f64(1.0 / f64::from(config.target_fps)),
+            next_geometry_poll_at: Instant::now() + geometry_poll_interval,
+            geometry_poll_interval,
+            last_desktop_rect: None,
             config,
             event_tx,
             window: None,
@@ -152,6 +160,68 @@ impl RendererApp {
 
     fn emit_fatal(&self, message: String) {
         let _ = self.event_tx.send(RendererEvent::Fatal { message });
+    }
+
+    fn sync_desktop_geometry(&mut self, force: bool) {
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+
+        let current_rect = desktop_rect_for_scope(self.config.desktop_scope);
+        if current_rect.width <= 0 || current_rect.height <= 0 {
+            tracing::warn!(
+                x = current_rect.x,
+                y = current_rect.y,
+                width = current_rect.width,
+                height = current_rect.height,
+                scope = ?self.config.desktop_scope,
+                "ignoring invalid desktop bounds while syncing renderer geometry"
+            );
+            return;
+        }
+
+        if !should_apply_geometry_update(self.last_desktop_rect, current_rect, force) {
+            return;
+        }
+
+        let hwnd = match window_hwnd(window.as_ref()) {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to fetch render window handle for geometry sync");
+                return;
+            }
+        };
+
+        let applied_rect = match place_window_over_desktop(hwnd, self.config.desktop_scope) {
+            Ok(rect) => rect,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to sync desktop geometry; will retry");
+                return;
+            }
+        };
+
+        if let Some(runtime) = self.runtime.as_mut() {
+            runtime.resize(PhysicalSize::new(
+                applied_rect.width as u32,
+                applied_rect.height as u32,
+            ));
+        }
+
+        let previous = self.last_desktop_rect;
+        self.last_desktop_rect = Some(applied_rect);
+        tracing::info!(
+            old_x = previous.map(|rect| rect.x),
+            old_y = previous.map(|rect| rect.y),
+            old_width = previous.map(|rect| rect.width),
+            old_height = previous.map(|rect| rect.height),
+            new_x = applied_rect.x,
+            new_y = applied_rect.y,
+            new_width = applied_rect.width,
+            new_height = applied_rect.height,
+            scope = ?self.config.desktop_scope,
+            "shader renderer desktop geometry synced"
+        );
+        window.request_redraw();
     }
 }
 
@@ -231,6 +301,8 @@ impl ApplicationHandler<UserEvent> for RendererApp {
         self.window = Some(window);
         self.runtime = Some(runtime);
         self.next_frame_at = Instant::now();
+        self.next_geometry_poll_at = Instant::now() + self.geometry_poll_interval;
+        self.sync_desktop_geometry(true);
         let _ = self.event_tx.send(RendererEvent::Ready);
         let _ = self.event_tx.send(RendererEvent::Running);
     }
@@ -245,10 +317,11 @@ impl ApplicationHandler<UserEvent> for RendererApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(size) => {
-                if let Some(runtime) = self.runtime.as_mut() {
-                    runtime.resize(size);
-                }
+            WindowEvent::Resized(_) => {
+                self.sync_desktop_geometry(true);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.sync_desktop_geometry(true);
             }
             WindowEvent::RedrawRequested => {
                 if self.paused || !self.enabled {
@@ -290,17 +363,30 @@ impl ApplicationHandler<UserEvent> for RendererApp {
             return;
         }
 
-        if let Some(window) = self.window.as_ref() {
+        if let Some(window) = self.window.as_ref().cloned() {
             let now = Instant::now();
+            if now >= self.next_geometry_poll_at {
+                self.sync_desktop_geometry(false);
+                self.next_geometry_poll_at = now + self.geometry_poll_interval;
+            }
             if now >= self.next_frame_at {
                 window.request_redraw();
                 self.next_frame_at = now + self.frame_interval;
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
+            let next_wake = self.next_frame_at.min(self.next_geometry_poll_at);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_wake));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
+}
+
+fn should_apply_geometry_update(
+    previous_rect: Option<DesktopRect>,
+    current_rect: DesktopRect,
+    force: bool,
+) -> bool {
+    force || previous_rect != Some(current_rect)
 }
 
 fn window_hwnd(window: &Window) -> Result<HWND> {
@@ -316,5 +402,39 @@ fn window_hwnd(window: &Window) -> Result<HWND> {
             Ok(hwnd)
         }
         _ => bail!("unsupported raw window handle type for Windows renderer"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> DesktopRect {
+        DesktopRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn geometry_update_is_skipped_when_rect_is_unchanged() {
+        let current = rect(0, 0, 1920, 1080);
+        assert!(!should_apply_geometry_update(Some(current), current, false));
+    }
+
+    #[test]
+    fn geometry_update_runs_when_size_changes() {
+        let previous = rect(0, 0, 1920, 1080);
+        let current = rect(0, 0, 2560, 1440);
+        assert!(should_apply_geometry_update(Some(previous), current, false));
+    }
+
+    #[test]
+    fn geometry_update_runs_when_origin_changes() {
+        let previous = rect(0, 0, 3840, 2160);
+        let current = rect(-1920, 0, 3840, 2160);
+        assert!(should_apply_geometry_update(Some(previous), current, false));
     }
 }

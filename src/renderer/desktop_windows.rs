@@ -10,7 +10,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER, SW_HIDE, SW_SHOW,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DesktopRect {
     pub x: i32,
     pub y: i32,
