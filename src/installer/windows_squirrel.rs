@@ -1,15 +1,31 @@
 use crate::errors::Result;
 use crate::installer::SquirrelEvent;
 use crate::installer::StartupRegistrationStatus;
-use crate::version::BINARY_FILENAME;
+use crate::version::{APP_NAME, BINARY_FILENAME};
 use anyhow::Context;
+use std::ffi::OsStr;
+use std::mem::size_of;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::ptr;
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+    REG_OPTION_NON_VOLATILE, REG_SZ,
+};
+
+const UNINSTALL_REGISTRY_BASE: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+const DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PUBLISHER: &str = match option_env!("AURA_PUBLISHER") {
+    Some(value) => value,
+    None => "",
+};
 
 pub fn handle(event: SquirrelEvent) -> Result<bool> {
     match event {
         SquirrelEvent::Install | SquirrelEvent::Updated => {
             create_startup_and_start_menu_shortcuts()?;
+            upsert_uninstall_registry_metadata()?;
             Ok(true)
         }
         SquirrelEvent::Uninstall => {
@@ -205,6 +221,100 @@ fn binary_filename_with_extension() -> String {
     format!("{BINARY_FILENAME}.exe")
 }
 
+fn upsert_uninstall_registry_metadata() -> Result<()> {
+    let current_exe = std::env::current_exe()
+        .context("failed to resolve current executable for uninstall registry metadata")?;
+    let display_icon = display_icon_value(&current_exe);
+    let publisher = publisher_value()?;
+
+    with_uninstall_registry_key(|key| {
+        set_registry_string_value(key, "DisplayIcon", &display_icon)?;
+        set_registry_string_value(key, "DisplayVersion", DISPLAY_VERSION)?;
+        set_registry_string_value(key, "Publisher", &publisher)?;
+        Ok(())
+    })
+}
+
+fn uninstall_registry_subkey() -> String {
+    format!(r"{UNINSTALL_REGISTRY_BASE}\{APP_NAME}")
+}
+
+fn display_icon_value(current_exe: &Path) -> String {
+    format!("{},0", current_exe.display())
+}
+
+fn publisher_value() -> Result<String> {
+    let value = PUBLISHER.trim();
+    if value.is_empty() {
+        anyhow::bail!("AURA_PUBLISHER is empty; cannot write uninstall Publisher");
+    }
+    Ok(value.to_string())
+}
+
+fn with_uninstall_registry_key<F>(write_values: F) -> Result<()>
+where
+    F: FnOnce(HKEY) -> Result<()>,
+{
+    let subkey = uninstall_registry_subkey();
+    let subkey_wide = to_wide_z(&subkey);
+    let mut key: HKEY = ptr::null_mut();
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey_wide.as_ptr(),
+            0,
+            ptr::null_mut(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            ptr::null(),
+            &mut key,
+            ptr::null_mut(),
+        )
+    };
+    if status != 0 {
+        anyhow::bail!(
+            "failed to create/open uninstall registry key '{}' (status={status})",
+            subkey
+        );
+    }
+
+    let write_result = write_values(key);
+    let close_status = unsafe { RegCloseKey(key) };
+    write_result?;
+    if close_status != 0 {
+        anyhow::bail!(
+            "failed to close uninstall registry key '{}' (status={close_status})",
+            subkey
+        );
+    }
+
+    Ok(())
+}
+
+fn set_registry_string_value(key: HKEY, name: &str, value: &str) -> Result<()> {
+    let name_wide = to_wide_z(name);
+    let value_wide = to_wide_z(value);
+    let value_bytes = (value_wide.len() * size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            name_wide.as_ptr(),
+            0,
+            REG_SZ,
+            value_wide.as_ptr() as *const u8,
+            value_bytes,
+        )
+    };
+    if status != 0 {
+        anyhow::bail!("failed to set registry value '{}' (status={status})", name);
+    }
+    Ok(())
+}
+
+fn to_wide_z(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +377,22 @@ mod tests {
 
         let update_exe = update_exe_path_from_current_exe(&current_exe).unwrap();
         assert_eq!(update_exe, tmp.path().join("Update.exe"));
+    }
+
+    #[test]
+    fn uninstall_registry_subkey_is_app_specific() {
+        assert_eq!(
+            uninstall_registry_subkey(),
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\aura"
+        );
+    }
+
+    #[test]
+    fn display_icon_value_appends_icon_index() {
+        let exe_path = Path::new(r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe");
+        assert_eq!(
+            display_icon_value(exe_path),
+            r"C:\Users\alice\AppData\Local\aura\app-1.2.3\aura.exe,0"
+        );
     }
 }

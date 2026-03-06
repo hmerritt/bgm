@@ -30,15 +30,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AURA_VERSION_METADATA");
     println!("cargo:rerun-if-env-changed=AURA_BUILD_DATE");
 
-    emit_version_metadata();
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is required"));
+    emit_version_metadata(&manifest_dir);
 
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {
         return;
     }
 
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is required"));
     let out_dir = PathBuf::from(
         std::env::var("OUT_DIR").expect("OUT_DIR is required for resource generation"),
     );
@@ -391,7 +391,7 @@ fn generate_menu_icon(source_png: &Path, output_ico: &Path) {
         .unwrap_or_else(|e| panic!("failed to write {}: {}", output_ico.display(), e));
 }
 
-fn emit_version_metadata() {
+fn emit_version_metadata(manifest_dir: &Path) {
     let git_commit = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_default();
     let git_branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
@@ -402,12 +402,51 @@ fn emit_version_metadata() {
 
     let version_prerelease = std::env::var("AURA_VERSION_PRERELEASE").unwrap_or_default();
     let version_metadata = std::env::var("AURA_VERSION_METADATA").unwrap_or_default();
+    let publisher = read_publisher_from_nuspec(manifest_dir);
 
     println!("cargo:rustc-env=AURA_GIT_COMMIT={git_commit}");
     println!("cargo:rustc-env=AURA_GIT_BRANCH={git_branch}");
     println!("cargo:rustc-env=AURA_BUILD_DATE={build_date}");
     println!("cargo:rustc-env=AURA_VERSION_PRERELEASE={version_prerelease}");
     println!("cargo:rustc-env=AURA_VERSION_METADATA={version_metadata}");
+    println!("cargo:rustc-env=AURA_PUBLISHER={publisher}");
+}
+
+fn read_publisher_from_nuspec(manifest_dir: &Path) -> String {
+    let nuspec_path = manifest_dir
+        .join("packaging")
+        .join("windows")
+        .join("squirrel")
+        .join("aura.nuspec");
+    println!("cargo:rerun-if-changed={}", nuspec_path.display());
+
+    let nuspec_contents = fs::read_to_string(&nuspec_path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read nuspec metadata {}: {}",
+            nuspec_path.display(),
+            error
+        )
+    });
+
+    extract_xml_element(&nuspec_contents, "authors")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "missing non-empty <authors> value in {}",
+                nuspec_path.display()
+            )
+        })
+        .to_string()
+}
+
+fn extract_xml_element<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+
+    let start_index = text.find(&start_tag)? + start_tag.len();
+    let end_index = text[start_index..].find(&end_tag)? + start_index;
+    Some(&text[start_index..end_index])
 }
 
 fn run_git(args: &[&str]) -> Option<String> {
