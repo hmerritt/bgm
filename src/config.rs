@@ -59,25 +59,13 @@ pub enum ShaderColorSpace {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawShaderConfig {
-    name: Option<String>,
-    target_fps: Option<u16>,
-    mouse_enabled: Option<bool>,
-    #[serde(rename = "quality")]
-    _quality: Option<hcl::Value>,
-    desktop_scope: Option<ShaderDesktopScope>,
-    color_space: Option<ShaderColorSpace>,
-    #[serde(rename = "memory_target_mb")]
-    _memory_target_mb: Option<hcl::Value>,
-    #[serde(rename = "power_preference")]
-    _power_preference: Option<hcl::Value>,
-    #[serde(rename = "max_frame_latency")]
-    _max_frame_latency: Option<hcl::Value>,
-    #[serde(rename = "crate_path")]
-    _crate_path: Option<PathBuf>,
-    #[serde(rename = "hot_reload")]
-    _hot_reload: Option<bool>,
-    #[serde(rename = "reload_debounce_ms")]
-    _reload_debounce_ms: Option<u64>,
+    name: Option<Lenient<String>>,
+    target_fps: Option<Lenient<u16>>,
+    mouse_enabled: Option<Lenient<bool>>,
+    desktop_scope: Option<Lenient<ShaderDesktopScope>>,
+    color_space: Option<Lenient<ShaderColorSpace>>,
+    #[serde(flatten)]
+    extra: hcl::Map<String, hcl::Value>,
 }
 
 fn default_recursive() -> bool {
@@ -89,17 +77,23 @@ fn default_recursive() -> bool {
 enum RawSourceConfig {
     File {
         path: PathBuf,
+        #[serde(flatten)]
+        extra: hcl::Map<String, hcl::Value>,
     },
     Directory {
         path: PathBuf,
         #[serde(default = "default_recursive")]
         recursive: bool,
         extensions: Option<Vec<String>>,
+        #[serde(flatten)]
+        extra: hcl::Map<String, hcl::Value>,
     },
     Rss {
         url: String,
         max_items: Option<usize>,
         download_dir: Option<PathBuf>,
+        #[serde(flatten)]
+        extra: hcl::Map<String, hcl::Value>,
     },
 }
 
@@ -111,38 +105,48 @@ enum DurationInput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawImageConfig {
-    timer: Option<DurationInput>,
+    timer: Option<Lenient<DurationInput>>,
     #[serde(rename = "remoteUpdateTimer")]
-    remote_update_timer: Option<DurationInput>,
-    sources: Option<Vec<RawSourceConfig>>,
-    format: Option<OutputFormat>,
-    jpeg_quality: Option<u8>,
+    remote_update_timer: Option<Lenient<DurationInput>>,
+    sources: Option<Lenient<Vec<Lenient<RawSourceConfig>>>>,
+    format: Option<Lenient<OutputFormat>>,
+    jpeg_quality: Option<Lenient<u8>>,
+    #[serde(flatten)]
+    extra: hcl::Map<String, hcl::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawUpdaterConfig {
-    enabled: Option<bool>,
+    enabled: Option<Lenient<bool>>,
     #[serde(rename = "checkInterval")]
-    check_interval: Option<DurationInput>,
+    check_interval: Option<Lenient<DurationInput>>,
     #[serde(rename = "feedUrl")]
-    feed_url: Option<String>,
+    feed_url: Option<Lenient<String>>,
+    #[serde(flatten)]
+    extra: hcl::Map<String, hcl::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawConfig {
-    image: Option<RawImageConfig>,
-    updater: Option<RawUpdaterConfig>,
-    cache_dir: Option<PathBuf>,
-    state_file: Option<PathBuf>,
-    log_level: Option<String>,
-    max_cache_mb: Option<u64>,
-    max_cache_age_days: Option<u64>,
-    renderer: Option<RendererMode>,
-    shader: Option<RawShaderConfig>,
+    image: Option<Lenient<RawImageConfig>>,
+    updater: Option<Lenient<RawUpdaterConfig>>,
+    cache_dir: Option<Lenient<PathBuf>>,
+    state_file: Option<Lenient<PathBuf>>,
+    log_level: Option<Lenient<String>>,
+    max_cache_mb: Option<Lenient<u64>>,
+    max_cache_age_days: Option<Lenient<u64>>,
+    renderer: Option<Lenient<RendererMode>>,
+    shader: Option<Lenient<RawShaderConfig>>,
+    #[serde(flatten)]
+    extra: hcl::Map<String, hcl::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Lenient<T> {
+    Valid(T),
+    Invalid(hcl::Value),
 }
 
 #[derive(Debug, Clone)]
@@ -200,13 +204,56 @@ pub struct ShaderConfig {
     pub color_space: ShaderColorSpace,
 }
 
-pub fn load_from_path(path: &Path) -> Result<AuraConfig> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigWarning {
+    pub key_path: String,
+    pub issue: String,
+    pub fallback: String,
+    pub raw_value: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigWithWarnings {
+    pub config: AuraConfig,
+    pub warnings: Vec<ConfigWarning>,
+}
+
+impl ConfigWarning {
+    fn unknown_key(key_path: String, raw_value: &hcl::Value) -> Self {
+        Self {
+            key_path,
+            issue: "unknown key".to_string(),
+            fallback: "ignored".to_string(),
+            raw_value: Some(raw_value.to_string()),
+        }
+    }
+
+    fn invalid_value(
+        key_path: impl Into<String>,
+        issue: impl Into<String>,
+        fallback: impl Into<String>,
+        raw_value: Option<&hcl::Value>,
+    ) -> Self {
+        Self {
+            key_path: key_path.into(),
+            issue: issue.into(),
+            fallback: fallback.into(),
+            raw_value: raw_value.map(ToString::to_string),
+        }
+    }
+}
+
+pub fn load_from_path_with_warnings(path: &Path) -> Result<ConfigWithWarnings> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read config from {}", path.display()))?;
-    parse_from_str(&content, path)
+    parse_from_str_with_warnings(&content, path)
 }
 
 pub fn parse_from_str(content: &str, path: &Path) -> Result<AuraConfig> {
+    Ok(parse_from_str_with_warnings(content, path)?.config)
+}
+
+pub fn parse_from_str_with_warnings(content: &str, path: &Path) -> Result<ConfigWithWarnings> {
     let raw: RawConfig =
         hcl::from_str(content).with_context(|| format!("invalid HCL in {}", path.display()))?;
     AuraConfig::from_raw(raw, path)
@@ -260,113 +307,266 @@ updater = {{
 }
 
 impl AuraConfig {
-    fn from_raw(raw: RawConfig, config_path: &Path) -> Result<Self> {
+    fn from_raw(raw: RawConfig, config_path: &Path) -> Result<ConfigWithWarnings> {
+        let mut warnings = Vec::new();
+        warn_unknown_keys("", &raw.extra, &mut warnings);
+
         let config_parent = config_path.parent().unwrap_or_else(|| Path::new("."));
         let app_dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("aura");
 
-        let cache_dir = resolve_path(
-            raw.cache_dir.unwrap_or_else(|| app_dir.join("cache")),
+        let cache_path = take_lenient(
+            "cache_dir",
+            raw.cache_dir,
+            &mut warnings,
+            "using default cache directory",
+        )
+        .unwrap_or_else(|| app_dir.join("cache"));
+        let cache_dir = resolve_path(cache_path, config_parent);
+        let state_path = take_lenient(
+            "state_file",
+            raw.state_file,
+            &mut warnings,
+            "using default state file path",
+        )
+        .unwrap_or_else(|| app_dir.join("state.json"));
+        let state_file = resolve_path(state_path, config_parent);
+        let image = parse_image_config(
+            take_lenient(
+                "image",
+                raw.image,
+                &mut warnings,
+                "using default image settings",
+            ),
             config_parent,
-        );
-        let state_file = resolve_path(
-            raw.state_file.unwrap_or_else(|| app_dir.join("state.json")),
-            config_parent,
-        );
-        let image = parse_image_config(raw.image, config_parent)?;
-        let updater = parse_updater_config(raw.updater)?;
-        let max_cache_bytes = raw.max_cache_mb.unwrap_or(DEFAULT_MAX_CACHE_MB) * 1024 * 1024;
-        let max_cache_age = Duration::from_secs(
-            raw.max_cache_age_days.unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS) * 24 * 60 * 60,
-        );
-        let renderer = raw.renderer.unwrap_or(RendererMode::Image);
-        let shader = parse_shader_config(raw.shader, renderer)?;
+            &mut warnings,
+        )?;
+        let updater = parse_updater_config(
+            take_lenient(
+                "updater",
+                raw.updater,
+                &mut warnings,
+                "using default updater settings",
+            ),
+            &mut warnings,
+        )?;
 
-        Ok(Self {
-            image,
-            updater,
-            cache_dir,
-            state_file,
-            log_level: raw.log_level.unwrap_or_else(|| "info".to_string()),
-            max_cache_bytes,
-            max_cache_age,
+        let max_cache_mb = take_lenient(
+            "max_cache_mb",
+            raw.max_cache_mb,
+            &mut warnings,
+            "using default max cache size",
+        )
+        .unwrap_or(DEFAULT_MAX_CACHE_MB);
+        let max_cache_bytes = max_cache_mb * 1024 * 1024;
+
+        let max_cache_age_days = take_lenient(
+            "max_cache_age_days",
+            raw.max_cache_age_days,
+            &mut warnings,
+            "using default max cache age",
+        )
+        .unwrap_or(DEFAULT_MAX_CACHE_AGE_DAYS);
+        let max_cache_age = Duration::from_secs(max_cache_age_days * 24 * 60 * 60);
+        let renderer = take_lenient(
+            "renderer",
+            raw.renderer,
+            &mut warnings,
+            "using default renderer mode",
+        )
+        .unwrap_or(RendererMode::Image);
+        let shader = parse_shader_config(
+            take_lenient(
+                "shader",
+                raw.shader,
+                &mut warnings,
+                "using default shader settings",
+            ),
             renderer,
-            shader,
+            &mut warnings,
+        )?;
+
+        let log_level = take_lenient(
+            "log_level",
+            raw.log_level,
+            &mut warnings,
+            "using default log level",
+        )
+        .unwrap_or_else(|| "info".to_string());
+
+        Ok(ConfigWithWarnings {
+            config: Self {
+                image,
+                updater,
+                cache_dir,
+                state_file,
+                log_level,
+                max_cache_bytes,
+                max_cache_age,
+                renderer,
+                shader,
+            },
+            warnings,
         })
     }
 }
 
-fn parse_image_config(raw: Option<RawImageConfig>, config_parent: &Path) -> Result<ImageConfig> {
+fn parse_image_config(
+    raw: Option<RawImageConfig>,
+    config_parent: &Path,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<ImageConfig> {
     let raw = raw.unwrap_or_else(|| RawImageConfig {
         timer: None,
         remote_update_timer: None,
         sources: None,
         format: None,
         jpeg_quality: None,
+        extra: hcl::Map::new(),
     });
-    let timer_secs = parse_duration_field("image.timer", raw.timer, DEFAULT_TIMER_SECS)?;
+    warn_unknown_keys("image", &raw.extra, warnings);
+
+    let mut timer_secs =
+        parse_duration_field_with_warnings("image.timer", raw.timer, DEFAULT_TIMER_SECS, warnings);
     if timer_secs < MIN_TIMER_SECS {
-        bail!("image.timer must be at least {MIN_TIMER_SECS} seconds");
+        warnings.push(ConfigWarning::invalid_value(
+            "image.timer",
+            format!("must be at least {MIN_TIMER_SECS} seconds"),
+            format!("using default {DEFAULT_TIMER_SECS}s"),
+            None,
+        ));
+        timer_secs = DEFAULT_TIMER_SECS;
     }
 
-    let remote_secs = parse_duration_field(
+    let mut remote_secs = parse_duration_field_with_warnings(
         "image.remoteUpdateTimer",
         raw.remote_update_timer,
         DEFAULT_REMOTE_UPDATE_TIMER_SECS,
-    )?;
+        warnings,
+    );
     if remote_secs < MIN_REMOTE_UPDATE_SECS {
-        bail!("image.remoteUpdateTimer must be at least {MIN_REMOTE_UPDATE_SECS} seconds");
+        warnings.push(ConfigWarning::invalid_value(
+            "image.remoteUpdateTimer",
+            format!("must be at least {MIN_REMOTE_UPDATE_SECS} seconds"),
+            format!("using default {DEFAULT_REMOTE_UPDATE_TIMER_SECS}s"),
+            None,
+        ));
+        remote_secs = DEFAULT_REMOTE_UPDATE_TIMER_SECS;
     }
 
-    let jpeg_quality = raw.jpeg_quality.unwrap_or(DEFAULT_JPEG_QUALITY);
+    let mut jpeg_quality = take_lenient(
+        "image.jpeg_quality",
+        raw.jpeg_quality,
+        warnings,
+        "using default jpeg quality",
+    )
+    .unwrap_or(DEFAULT_JPEG_QUALITY);
     if jpeg_quality == 0 || jpeg_quality > 100 {
-        bail!("image.jpeg_quality must be between 1 and 100");
+        warnings.push(ConfigWarning::invalid_value(
+            "image.jpeg_quality",
+            format!("must be between 1 and 100, got {jpeg_quality}"),
+            format!("using default {DEFAULT_JPEG_QUALITY}"),
+            None,
+        ));
+        jpeg_quality = DEFAULT_JPEG_QUALITY;
     }
 
-    let sources = raw
-        .sources
-        .unwrap_or_else(|| default_raw_image_sources(config_parent))
-        .into_iter()
-        .map(|source| validate_source(source, config_parent))
-        .collect::<Result<Vec<_>>>()?;
+    let mut sources = match take_lenient(
+        "image.sources",
+        raw.sources,
+        warnings,
+        "using default source list",
+    ) {
+        Some(raw_sources) => parse_sources(raw_sources, config_parent, warnings),
+        None => default_sources(config_parent, warnings),
+    };
 
     if sources.is_empty() {
-        bail!("image.sources must contain at least one source");
+        warnings.push(ConfigWarning::invalid_value(
+            "image.sources",
+            "no valid sources found",
+            "using default source list",
+            None,
+        ));
+        sources = default_sources(config_parent, warnings);
     }
+
+    let format = take_lenient(
+        "image.format",
+        raw.format,
+        warnings,
+        "using default image format",
+    )
+    .unwrap_or(OutputFormat::Jpg);
 
     Ok(ImageConfig {
         timer: Duration::from_secs(timer_secs),
         remote_update_timer: Duration::from_secs(remote_secs),
         sources,
-        format: raw.format.unwrap_or(OutputFormat::Jpg),
+        format,
         jpeg_quality,
     })
 }
 
-fn parse_updater_config(raw: Option<RawUpdaterConfig>) -> Result<UpdaterConfig> {
+fn parse_updater_config(
+    raw: Option<RawUpdaterConfig>,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<UpdaterConfig> {
     let raw = raw.unwrap_or_else(|| RawUpdaterConfig {
         enabled: None,
         check_interval: None,
         feed_url: None,
+        extra: hcl::Map::new(),
     });
+    warn_unknown_keys("updater", &raw.extra, warnings);
 
-    let check_interval_secs = parse_duration_field(
+    let mut check_interval_secs = parse_duration_field_with_warnings(
         "updater.checkInterval",
         raw.check_interval,
         DEFAULT_UPDATER_CHECK_INTERVAL_SECS,
-    )?;
+        warnings,
+    );
     if check_interval_secs < MIN_UPDATER_CHECK_INTERVAL_SECS {
-        bail!("updater.checkInterval must be at least {MIN_UPDATER_CHECK_INTERVAL_SECS} seconds");
+        warnings.push(ConfigWarning::invalid_value(
+            "updater.checkInterval",
+            format!("must be at least {MIN_UPDATER_CHECK_INTERVAL_SECS} seconds"),
+            format!("using default {DEFAULT_UPDATER_CHECK_INTERVAL_SECS}s"),
+            None,
+        ));
+        check_interval_secs = DEFAULT_UPDATER_CHECK_INTERVAL_SECS;
     }
 
-    let feed_url = raw
-        .feed_url
-        .unwrap_or_else(|| DEFAULT_UPDATER_FEED_URL.to_string());
-    let feed_url = normalize_updater_feed_url(&feed_url)?;
+    let feed_url_input = take_lenient(
+        "updater.feedUrl",
+        raw.feed_url,
+        warnings,
+        "using default updater feed URL",
+    )
+    .unwrap_or_else(|| DEFAULT_UPDATER_FEED_URL.to_string());
+    let feed_url = match normalize_updater_feed_url(&feed_url_input) {
+        Ok(feed_url) => feed_url,
+        Err(error) => {
+            warnings.push(ConfigWarning::invalid_value(
+                "updater.feedUrl",
+                error.to_string(),
+                format!("using default {DEFAULT_UPDATER_FEED_URL}"),
+                None,
+            ));
+            DEFAULT_UPDATER_FEED_URL.to_string()
+        }
+    };
+
+    let enabled = take_lenient(
+        "updater.enabled",
+        raw.enabled,
+        warnings,
+        "using updater default",
+    )
+    .unwrap_or(true);
 
     Ok(UpdaterConfig {
-        enabled: raw.enabled.unwrap_or(true),
+        enabled,
         check_interval: Duration::from_secs(check_interval_secs),
         feed_url,
     })
@@ -406,38 +606,57 @@ fn default_raw_image_sources(config_parent: &Path) -> Vec<RawSourceConfig> {
                 .map(|x| x.to_string())
                 .collect(),
         ),
+        extra: hcl::Map::new(),
     }]
 }
 
 fn parse_shader_config(
     raw: Option<RawShaderConfig>,
     renderer: RendererMode,
+    warnings: &mut Vec<ConfigWarning>,
 ) -> Result<Option<ShaderConfig>> {
     let Some(raw) = raw else {
         if renderer == RendererMode::Shader {
-            return Ok(Some(ShaderConfig {
-                name: DEFAULT_SHADER_NAME.to_string(),
-                target_fps: DEFAULT_SHADER_TARGET_FPS,
-                mouse_enabled: false,
-                desktop_scope: ShaderDesktopScope::Virtual,
-                color_space: DEFAULT_SHADER_COLOR_SPACE,
-            }));
+            return Ok(Some(default_shader_config()));
         }
         return Ok(None);
     };
+    warn_unknown_keys("shader", &raw.extra, warnings);
 
-    let target_fps = raw.target_fps.unwrap_or(DEFAULT_SHADER_TARGET_FPS);
+    let mut target_fps = take_lenient(
+        "shader.target_fps",
+        raw.target_fps,
+        warnings,
+        "using default shader FPS",
+    )
+    .unwrap_or(DEFAULT_SHADER_TARGET_FPS);
     if target_fps == 0 || target_fps > 240 {
-        bail!("shader.target_fps must be between 1 and 240");
+        warnings.push(ConfigWarning::invalid_value(
+            "shader.target_fps",
+            format!("must be between 1 and 240, got {target_fps}"),
+            format!("using default {DEFAULT_SHADER_TARGET_FPS}"),
+            None,
+        ));
+        target_fps = DEFAULT_SHADER_TARGET_FPS;
     }
-    let name = raw
-        .name
-        .as_deref()
-        .unwrap_or(DEFAULT_SHADER_NAME)
-        .trim()
-        .to_string();
+
+    let mut name = take_lenient(
+        "shader.name",
+        raw.name,
+        warnings,
+        "using default shader name",
+    )
+    .unwrap_or_else(|| DEFAULT_SHADER_NAME.to_string())
+    .trim()
+    .to_string();
     if name.is_empty() {
-        bail!("shader.name must not be empty");
+        warnings.push(ConfigWarning::invalid_value(
+            "shader.name",
+            "must not be empty",
+            format!("using default {DEFAULT_SHADER_NAME}"),
+            None,
+        ));
+        name = DEFAULT_SHADER_NAME.to_string();
     }
     let name = if name == LEGACY_SHADER_NAME {
         DEFAULT_SHADER_NAME.to_string()
@@ -445,13 +664,183 @@ fn parse_shader_config(
         name
     };
 
+    let mouse_enabled = take_lenient(
+        "shader.mouse_enabled",
+        raw.mouse_enabled,
+        warnings,
+        "using shader mouse default",
+    )
+    .unwrap_or(false);
+    let desktop_scope = take_lenient(
+        "shader.desktop_scope",
+        raw.desktop_scope,
+        warnings,
+        "using shader desktop scope default",
+    )
+    .unwrap_or(ShaderDesktopScope::Virtual);
+    let color_space = take_lenient(
+        "shader.color_space",
+        raw.color_space,
+        warnings,
+        "using shader color space default",
+    )
+    .unwrap_or(DEFAULT_SHADER_COLOR_SPACE);
+
     Ok(Some(ShaderConfig {
         name,
         target_fps,
-        mouse_enabled: raw.mouse_enabled.unwrap_or(false),
-        desktop_scope: raw.desktop_scope.unwrap_or(ShaderDesktopScope::Virtual),
-        color_space: raw.color_space.unwrap_or(DEFAULT_SHADER_COLOR_SPACE),
+        mouse_enabled,
+        desktop_scope,
+        color_space,
     }))
+}
+
+fn default_shader_config() -> ShaderConfig {
+    ShaderConfig {
+        name: DEFAULT_SHADER_NAME.to_string(),
+        target_fps: DEFAULT_SHADER_TARGET_FPS,
+        mouse_enabled: false,
+        desktop_scope: ShaderDesktopScope::Virtual,
+        color_space: DEFAULT_SHADER_COLOR_SPACE,
+    }
+}
+
+fn parse_sources(
+    raw_sources: Vec<Lenient<RawSourceConfig>>,
+    config_parent: &Path,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Vec<SourceConfig> {
+    let mut sources = Vec::new();
+    for (index, raw_source) in raw_sources.into_iter().enumerate() {
+        let field = format!("image.sources[{index}]");
+        let Some(source) =
+            take_lenient(&field, Some(raw_source), warnings, "dropping source entry")
+        else {
+            continue;
+        };
+        warn_unknown_source_keys(&field, &source, warnings);
+        match validate_source(source, config_parent) {
+            Ok(source) => sources.push(source),
+            Err(error) => warnings.push(ConfigWarning::invalid_value(
+                field,
+                error.to_string(),
+                "dropping source entry",
+                None,
+            )),
+        }
+    }
+    sources
+}
+
+fn default_sources(config_parent: &Path, warnings: &mut Vec<ConfigWarning>) -> Vec<SourceConfig> {
+    let mut sources = Vec::new();
+    for source in default_raw_image_sources(config_parent) {
+        match validate_source(source, config_parent) {
+            Ok(source) => sources.push(source),
+            Err(error) => warnings.push(ConfigWarning::invalid_value(
+                "image.sources",
+                error.to_string(),
+                "dropping source entry",
+                None,
+            )),
+        }
+    }
+
+    if sources.is_empty() {
+        sources.push(SourceConfig::Directory {
+            path: config_parent.to_path_buf(),
+            recursive: true,
+            extensions: Some(
+                ["jpg", "jpeg", "png", "webp", "bmp", "gif"]
+                    .into_iter()
+                    .map(|x| x.to_string())
+                    .collect(),
+            ),
+        });
+    }
+    sources
+}
+
+fn warn_unknown_source_keys(
+    source_path: &str,
+    source: &RawSourceConfig,
+    warnings: &mut Vec<ConfigWarning>,
+) {
+    match source {
+        RawSourceConfig::File { extra, .. }
+        | RawSourceConfig::Directory { extra, .. }
+        | RawSourceConfig::Rss { extra, .. } => warn_unknown_keys(source_path, extra, warnings),
+    }
+}
+
+fn warn_unknown_keys(
+    prefix: &str,
+    extras: &hcl::Map<String, hcl::Value>,
+    warnings: &mut Vec<ConfigWarning>,
+) {
+    for (key, value) in extras {
+        let key_path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        warnings.push(ConfigWarning::unknown_key(key_path, value));
+    }
+}
+
+fn take_lenient<T>(
+    key_path: &str,
+    value: Option<Lenient<T>>,
+    warnings: &mut Vec<ConfigWarning>,
+    fallback: &str,
+) -> Option<T> {
+    match value {
+        Some(Lenient::Valid(value)) => Some(value),
+        Some(Lenient::Invalid(raw_value)) => {
+            warnings.push(ConfigWarning::invalid_value(
+                key_path,
+                "invalid value",
+                fallback,
+                Some(&raw_value),
+            ));
+            None
+        }
+        None => None,
+    }
+}
+
+fn parse_duration_field_with_warnings(
+    field_name: &str,
+    value: Option<Lenient<DurationInput>>,
+    default_secs: u64,
+    warnings: &mut Vec<ConfigWarning>,
+) -> u64 {
+    match value {
+        Some(Lenient::Valid(value)) => {
+            match parse_duration_field(field_name, Some(value), default_secs) {
+                Ok(secs) => secs,
+                Err(error) => {
+                    warnings.push(ConfigWarning::invalid_value(
+                        field_name,
+                        error.to_string(),
+                        format!("using default {default_secs}s"),
+                        None,
+                    ));
+                    default_secs
+                }
+            }
+        }
+        Some(Lenient::Invalid(raw_value)) => {
+            warnings.push(ConfigWarning::invalid_value(
+                field_name,
+                "invalid duration value",
+                format!("using default {default_secs}s"),
+                Some(&raw_value),
+            ));
+            default_secs
+        }
+        None => default_secs,
+    }
 }
 
 fn parse_duration_field(
@@ -508,7 +897,7 @@ fn parse_duration_string(field_name: &str, raw: &str) -> Result<u64> {
 
 fn validate_source(source: RawSourceConfig, config_parent: &Path) -> Result<SourceConfig> {
     match source {
-        RawSourceConfig::File { path } => {
+        RawSourceConfig::File { path, .. } => {
             let path = resolve_path(path, config_parent);
             if !path.exists() || !path.is_file() {
                 bail!(
@@ -522,6 +911,7 @@ fn validate_source(source: RawSourceConfig, config_parent: &Path) -> Result<Sour
             path,
             recursive,
             extensions,
+            ..
         } => {
             let path = resolve_path(path, config_parent);
             if !path.exists() || !path.is_dir() {
@@ -547,6 +937,7 @@ fn validate_source(source: RawSourceConfig, config_parent: &Path) -> Result<Sour
             url,
             max_items,
             download_dir,
+            ..
         } => {
             if !(url.starts_with("http://") || url.starts_with("https://")) {
                 bail!("rss url must start with http:// or https://: {url}");
@@ -596,6 +987,10 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn has_warning(warnings: &[ConfigWarning], key_path: &str) -> bool {
+        warnings.iter().any(|warning| warning.key_path == key_path)
+    }
+
     #[test]
     fn parses_valid_config() {
         let tmp = tempdir().unwrap();
@@ -627,7 +1022,7 @@ image = {{
     }
 
     #[test]
-    fn rejects_tiny_timer() {
+    fn falls_back_for_tiny_timer() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -642,7 +1037,9 @@ image = {{
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(parsed.config.image.timer.as_secs(), DEFAULT_TIMER_SECS);
+        assert!(has_warning(&parsed.warnings, "image.timer"));
     }
 
     #[test]
@@ -713,6 +1110,15 @@ shader = {{
         assert!(shader.mouse_enabled);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
+
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert!(has_warning(&parsed.warnings, "shader.quality"));
+        assert!(has_warning(&parsed.warnings, "shader.memory_target_mb"));
+        assert!(has_warning(&parsed.warnings, "shader.power_preference"));
+        assert!(has_warning(&parsed.warnings, "shader.max_frame_latency"));
+        assert!(has_warning(&parsed.warnings, "shader.crate_path"));
+        assert!(has_warning(&parsed.warnings, "shader.hot_reload"));
+        assert!(has_warning(&parsed.warnings, "shader.reload_debounce_ms"));
     }
 
     #[test]
@@ -817,7 +1223,7 @@ shader = {{
     }
 
     #[test]
-    fn rejects_invalid_shader_color_space_options() {
+    fn falls_back_for_invalid_shader_color_space_options() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -834,7 +1240,10 @@ shader = {{
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        let shader = parsed.config.shader.expect("shader config should exist");
+        assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
+        assert!(has_warning(&parsed.warnings, "shader.color_space"));
     }
 
     #[test]
@@ -882,7 +1291,7 @@ image = {{
     }
 
     #[test]
-    fn rejects_invalid_duration_string_formats() {
+    fn falls_back_for_invalid_duration_string_formats() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -905,16 +1314,23 @@ image = {{
                 timer,
                 hcl_path(&dir)
             );
+            let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+            assert_eq!(
+                parsed.config.image.timer.as_secs(),
+                DEFAULT_TIMER_SECS,
+                "expected image.timer={} to fallback",
+                timer
+            );
             assert!(
-                parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err(),
-                "expected image.timer={} to fail",
+                has_warning(&parsed.warnings, "image.timer"),
+                "expected image.timer={} warning",
                 timer
             );
         }
     }
 
     #[test]
-    fn applies_minimums_after_duration_parsing() {
+    fn falls_back_for_values_below_duration_minimums() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -928,7 +1344,13 @@ image = {{
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&tiny_timer, &tmp.path().join("aura.hcl")).is_err());
+        let parsed_timer =
+            parse_from_str_with_warnings(&tiny_timer, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(
+            parsed_timer.config.image.timer.as_secs(),
+            DEFAULT_TIMER_SECS
+        );
+        assert!(has_warning(&parsed_timer.warnings, "image.timer"));
 
         let tiny_remote = format!(
             r#"
@@ -940,11 +1362,20 @@ image = {{
 "#,
             hcl_path(&dir)
         );
-        assert!(parse_from_str(&tiny_remote, &tmp.path().join("aura.hcl")).is_err());
+        let parsed_remote =
+            parse_from_str_with_warnings(&tiny_remote, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(
+            parsed_remote.config.image.remote_update_timer.as_secs(),
+            DEFAULT_REMOTE_UPDATE_TIMER_SECS
+        );
+        assert!(has_warning(
+            &parsed_remote.warnings,
+            "image.remoteUpdateTimer"
+        ));
     }
 
     #[test]
-    fn rejects_overflowing_duration_values() {
+    fn falls_back_for_overflowing_duration_values() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -961,7 +1392,9 @@ image = {{
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(parsed.config.image.timer.as_secs(), DEFAULT_TIMER_SECS);
+        assert!(has_warning(&parsed.warnings, "image.timer"));
     }
 
     #[test]
@@ -1007,7 +1440,7 @@ updater = {{
     }
 
     #[test]
-    fn rejects_invalid_updater_check_interval() {
+    fn falls_back_for_invalid_updater_check_interval() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -1024,11 +1457,16 @@ updater = {{
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(
+            parsed.config.updater.check_interval.as_secs(),
+            DEFAULT_UPDATER_CHECK_INTERVAL_SECS
+        );
+        assert!(has_warning(&parsed.warnings, "updater.checkInterval"));
     }
 
     #[test]
-    fn rejects_invalid_updater_feed_scheme() {
+    fn falls_back_for_invalid_updater_feed_scheme() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -1045,11 +1483,13 @@ updater = {{
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert_eq!(parsed.config.updater.feed_url, DEFAULT_UPDATER_FEED_URL);
+        assert!(has_warning(&parsed.warnings, "updater.feedUrl"));
     }
 
     #[test]
-    fn rejects_legacy_top_level_image_keys() {
+    fn warns_for_unknown_legacy_top_level_image_keys() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -1062,11 +1502,13 @@ sources = [ {{ type = "directory", path = "{}" }} ]
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert!(has_warning(&parsed.warnings, "image_format"));
+        assert!(has_warning(&parsed.warnings, "sources"));
     }
 
     #[test]
-    fn rejects_legacy_top_level_timer() {
+    fn warns_for_unknown_legacy_top_level_timer() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("imgs");
         fs::create_dir_all(&dir).unwrap();
@@ -1081,6 +1523,7 @@ image = {{
             hcl_path(&dir)
         );
 
-        assert!(parse_from_str(&raw, &tmp.path().join("aura.hcl")).is_err());
+        let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        assert!(has_warning(&parsed.warnings, "timer"));
     }
 }

@@ -20,7 +20,7 @@ mod version;
 mod wallpaper;
 
 use crate::cache::CacheManager;
-use crate::config::{load_from_path, RendererMode};
+use crate::config::{load_from_path_with_warnings, ConfigWarning, RendererMode};
 use crate::errors::Result;
 use crate::installer::{SquirrelEvent, StartupRegistrationStatus};
 use crate::renderer::{RendererEvent, ShaderRenderer};
@@ -123,9 +123,11 @@ async fn run(args: Vec<String>, debug_requested: bool) -> Result<()> {
     let created = ensure_config_exists(&config_path)?;
 
     write_startup_stage(debug_requested, "load_config");
-    let mut config = load_from_path(&config_path)?;
+    let loaded_config = load_from_path_with_warnings(&config_path)?;
+    let mut config = loaded_config.config;
     write_startup_stage(debug_requested, "init_tracing");
     logging::init(&config.log_level);
+    log_config_warnings(&loaded_config.warnings);
     write_startup_stage(debug_requested, "ensure_startup_registered");
     match installer::ensure_startup_registered() {
         Ok(StartupRegistrationStatus::SkippedNotInstalled) => {
@@ -436,13 +438,15 @@ async fn run(args: Vec<String>, debug_requested: bool) -> Result<()> {
                     Some(TrayEvent::ReloadSettings) => {
                         info!("tray requested settings reload");
 
-                        let new_config = match load_from_path(&config_path) {
-                            Ok(new_config) => new_config,
+                        let loaded_config = match load_from_path_with_warnings(&config_path) {
+                            Ok(loaded_config) => loaded_config,
                             Err(error) => {
                                 warn!(error = %error, "failed to reload config; keeping current runtime settings");
                                 continue;
                             }
                         };
+                        log_config_warnings(&loaded_config.warnings);
+                        let new_config = loaded_config.config;
 
                         let new_cache = match CacheManager::new(&new_config) {
                             Ok(new_cache) => Arc::new(new_cache),
@@ -671,6 +675,27 @@ async fn run(args: Vec<String>, debug_requested: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn log_config_warnings(warnings: &[ConfigWarning]) {
+    for warning in warnings {
+        if let Some(raw_value) = warning.raw_value.as_deref() {
+            warn!(
+                config_key = %warning.key_path,
+                issue = %warning.issue,
+                fallback = %warning.fallback,
+                raw_value = %raw_value,
+                "config warning"
+            );
+        } else {
+            warn!(
+                config_key = %warning.key_path,
+                issue = %warning.issue,
+                fallback = %warning.fallback,
+                "config warning"
+            );
+        }
+    }
 }
 
 fn write_startup_stage(debug_requested: bool, stage: &str) {
