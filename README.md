@@ -54,6 +54,7 @@ image = {
 shader = {
 	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2" | "dither_warp" | "silk"
 	target_fps = 50
+	resolution = 100 # 1-100 (% internal shader render resolution; output stays full-screen)
 	mouse_enabled = false
 	desktop_scope = "virtual" # "virtual" | "primary"
 	color_space = "unorm" # "unorm" | "srgb"

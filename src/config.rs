@@ -13,6 +13,7 @@ const MIN_REMOTE_UPDATE_SECS: u64 = 30;
 const MIN_UPDATER_CHECK_INTERVAL_SECS: u64 = 10 * 60;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 const DEFAULT_SHADER_TARGET_FPS: u16 = 60;
+const DEFAULT_SHADER_RESOLUTION_PERCENT: u8 = 100;
 const DEFAULT_SHADER_NAME: &str = "gradient_glossy";
 const LEGACY_SHADER_NAME: &str = "gradient_shader";
 const DEFAULT_SHADER_COLOR_SPACE: ShaderColorSpace = ShaderColorSpace::Unorm;
@@ -61,6 +62,7 @@ pub enum ShaderColorSpace {
 struct RawShaderConfig {
     name: Option<Lenient<String>>,
     target_fps: Option<Lenient<u16>>,
+    resolution: Option<Lenient<u8>>,
     mouse_enabled: Option<Lenient<bool>>,
     desktop_scope: Option<Lenient<ShaderDesktopScope>>,
     color_space: Option<Lenient<ShaderColorSpace>>,
@@ -199,6 +201,7 @@ pub struct UpdaterConfig {
 pub struct ShaderConfig {
     pub name: String,
     pub target_fps: u16,
+    pub resolution: u8,
     pub mouse_enabled: bool,
     pub desktop_scope: ShaderDesktopScope,
     pub color_space: ShaderColorSpace,
@@ -288,6 +291,7 @@ image = {{
 shader = {{
 	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2" | "dither_warp" | "silk"
 	target_fps = 50
+	resolution = 100 # 1-100 (% internal shader render resolution; output stays full-screen)
 	mouse_enabled = false
 	desktop_scope = "virtual" # "virtual" | "primary"
 	color_space = "unorm" # "unorm" | "srgb"
@@ -640,6 +644,23 @@ fn parse_shader_config(
         target_fps = DEFAULT_SHADER_TARGET_FPS;
     }
 
+    let mut resolution = take_lenient(
+        "shader.resolution",
+        raw.resolution,
+        warnings,
+        "using default shader resolution",
+    )
+    .unwrap_or(DEFAULT_SHADER_RESOLUTION_PERCENT);
+    if resolution == 0 || resolution > 100 {
+        warnings.push(ConfigWarning::invalid_value(
+            "shader.resolution",
+            format!("must be between 1 and 100, got {resolution}"),
+            format!("using default {DEFAULT_SHADER_RESOLUTION_PERCENT}"),
+            None,
+        ));
+        resolution = DEFAULT_SHADER_RESOLUTION_PERCENT;
+    }
+
     let mut name = take_lenient(
         "shader.name",
         raw.name,
@@ -689,6 +710,7 @@ fn parse_shader_config(
     Ok(Some(ShaderConfig {
         name,
         target_fps,
+        resolution,
         mouse_enabled,
         desktop_scope,
         color_space,
@@ -699,6 +721,7 @@ fn default_shader_config() -> ShaderConfig {
     ShaderConfig {
         name: DEFAULT_SHADER_NAME.to_string(),
         target_fps: DEFAULT_SHADER_TARGET_FPS,
+        resolution: DEFAULT_SHADER_RESOLUTION_PERCENT,
         mouse_enabled: false,
         desktop_scope: ShaderDesktopScope::Virtual,
         color_space: DEFAULT_SHADER_COLOR_SPACE,
@@ -1051,6 +1074,7 @@ image = {{
         let raw = default_hcl(&pictures);
         assert!(raw.contains("name = \"gradient_glossy\""));
         assert!(raw.contains("color_space = \"unorm\""));
+        assert!(raw.contains("resolution = 100"));
         assert!(raw.contains("updater = {"));
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         // `default_hcl` uses explicit template durations (3h / 2h), not parser fallback defaults.
@@ -1073,6 +1097,7 @@ image = {{
 
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
     }
 
     #[test]
@@ -1107,6 +1132,7 @@ shader = {{
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
         assert_eq!(shader.target_fps, 75);
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
         assert!(shader.mouse_enabled);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
@@ -1143,6 +1169,7 @@ shader = {{
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
@@ -1170,6 +1197,7 @@ shader = {{
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Primary);
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
 
@@ -1194,6 +1222,7 @@ shader = {{
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.name, "gradient_glossy");
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
         assert_eq!(shader.desktop_scope, ShaderDesktopScope::Virtual);
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
     }
@@ -1220,6 +1249,7 @@ shader = {{
         let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = cfg.shader.expect("shader config should exist");
         assert_eq!(shader.color_space, ShaderColorSpace::Srgb);
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
     }
 
     #[test]
@@ -1243,7 +1273,60 @@ shader = {{
         let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
         let shader = parsed.config.shader.expect("shader config should exist");
         assert_eq!(shader.color_space, ShaderColorSpace::Unorm);
+        assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
         assert!(has_warning(&parsed.warnings, "shader.color_space"));
+    }
+
+    #[test]
+    fn parses_shader_resolution_percentage() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        let raw = format!(
+            r#"
+renderer = "shader"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+shader = {{
+  resolution = 50
+}}
+"#,
+            hcl_path(&dir)
+        );
+
+        let cfg = parse_from_str(&raw, &tmp.path().join("aura.hcl")).unwrap();
+        let shader = cfg.shader.expect("shader config should exist");
+        assert_eq!(shader.resolution, 50);
+    }
+
+    #[test]
+    fn falls_back_for_invalid_shader_resolution_percentage() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("imgs");
+        fs::create_dir_all(&dir).unwrap();
+
+        for resolution in [0_u16, 101_u16] {
+            let raw = format!(
+                r#"
+renderer = "shader"
+image = {{
+  sources = [ {{ type = "directory", path = "{}" }} ]
+}}
+shader = {{
+  resolution = {}
+}}
+"#,
+                hcl_path(&dir),
+                resolution
+            );
+
+            let parsed = parse_from_str_with_warnings(&raw, &tmp.path().join("aura.hcl")).unwrap();
+            let shader = parsed.config.shader.expect("shader config should exist");
+            assert_eq!(shader.resolution, DEFAULT_SHADER_RESOLUTION_PERCENT);
+            assert!(has_warning(&parsed.warnings, "shader.resolution"));
+        }
     }
 
     #[test]

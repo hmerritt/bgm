@@ -13,6 +13,39 @@ use winit::window::Window;
 const SHADER_POWER_PREFERENCE: wgpu::PowerPreference = wgpu::PowerPreference::LowPower;
 const SHADER_MAX_FRAME_LATENCY: u8 = 1;
 const SHADER_MEMORY_TARGET_MB: u64 = 80;
+const COMPOSITE_SHADER_SOURCE: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    var uvs = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(2.0, 0.0),
+        vec2<f32>(0.0, 2.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.uv = uvs[vertex_index];
+    return output;
+}
+
+@group(0) @binding(0) var source_texture: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(source_texture, source_sampler, input.uv);
+}
+"#;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -25,18 +58,30 @@ struct ShaderUniforms {
     mouse: [f32; 4],
 }
 
+struct InternalTarget {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    size: PhysicalSize<u32>,
+}
+
 pub struct WgpuRuntime {
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    scene_pipeline: wgpu::RenderPipeline,
+    scene_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
+    composite_pipeline: wgpu::RenderPipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    internal_target: InternalTarget,
     started_at: Instant,
     frame_index: u32,
     mouse_enabled: bool,
+    resolution_percent: u8,
 }
 
 impl WgpuRuntime {
@@ -91,13 +136,16 @@ impl WgpuRuntime {
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
 
-        let width = desktop_rect.width.max(1) as u32;
-        let height = desktop_rect.height.max(1) as u32;
-        let mut config = wgpu::SurfaceConfiguration {
+        let output_size = PhysicalSize::new(
+            desktop_rect.width.max(1) as u32,
+            desktop_rect.height.max(1) as u32,
+        );
+        let internal_size = compute_internal_render_size(output_size, shader_config.resolution);
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width,
-            height,
+            width: output_size.width,
+            height: output_size.height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
@@ -105,11 +153,14 @@ impl WgpuRuntime {
         };
 
         let estimated_bytes =
-            estimate_swapchain_memory_bytes(width, height, SHADER_MAX_FRAME_LATENCY);
+            estimate_swapchain_memory_bytes(config.width, config.height, SHADER_MAX_FRAME_LATENCY);
         let estimated_mb = bytes_to_megabytes(estimated_bytes);
         tracing::info!(
-            width,
-            height,
+            output_width = output_size.width,
+            output_height = output_size.height,
+            internal_width = internal_size.width,
+            internal_height = internal_size.height,
+            resolution_percent = shader_config.resolution,
             desktop_scope = ?shader_config.desktop_scope,
             power_preference = ?SHADER_POWER_PREFERENCE,
             max_frame_latency = SHADER_MAX_FRAME_LATENCY,
@@ -127,11 +178,24 @@ impl WgpuRuntime {
 
         surface.configure(&device, &config);
 
-        let (uniform_buffer, bind_group, pipeline) =
-            create_pipeline(&device, &config, shader_bytes, shader_config.mouse_enabled)?;
-
-        config.width = width;
-        config.height = height;
+        let (uniform_buffer, scene_bind_group, scene_pipeline) = create_scene_pipeline(
+            &device,
+            config.format,
+            shader_bytes,
+            shader_config.mouse_enabled,
+            internal_size,
+        )?;
+        let composite_bind_group_layout = create_composite_bind_group_layout(&device);
+        let composite_sampler = create_composite_sampler(&device);
+        let composite_pipeline =
+            create_composite_pipeline(&device, config.format, &composite_bind_group_layout);
+        let internal_target = create_internal_target(
+            &device,
+            internal_size,
+            config.format,
+            &composite_bind_group_layout,
+            &composite_sampler,
+        );
 
         Ok(Self {
             _instance: instance,
@@ -139,12 +203,17 @@ impl WgpuRuntime {
             device,
             queue,
             config,
-            pipeline,
-            bind_group,
+            scene_pipeline,
+            scene_bind_group,
             uniform_buffer,
+            composite_pipeline,
+            composite_bind_group_layout,
+            composite_sampler,
+            internal_target,
             started_at: Instant::now(),
             frame_index: 0,
             mouse_enabled: shader_config.mouse_enabled,
+            resolution_percent: shader_config.resolution,
         })
     }
 
@@ -152,9 +221,11 @@ impl WgpuRuntime {
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }
+
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+        self.recreate_internal_target();
     }
 
     pub fn render(&mut self, mouse: [f32; 2]) -> Result<()> {
@@ -172,18 +243,20 @@ impl WgpuRuntime {
             }
         };
 
+        let output_size = PhysicalSize::new(self.config.width, self.config.height);
+        let scaled_mouse = scale_mouse_to_internal(mouse, output_size, self.internal_target.size);
         let uniforms = ShaderUniforms {
             time_seconds: self.started_at.elapsed().as_secs_f32(),
             frame_index: self.frame_index,
             mouse_enabled: u32::from(self.mouse_enabled),
             _padding: 0,
             resolution: [
-                self.config.width as f32,
-                self.config.height as f32,
+                self.internal_target.size.width as f32,
+                self.internal_target.size.height as f32,
                 0.0,
                 0.0,
             ],
-            mouse: [mouse[0], mouse[1], 0.0, 0.0],
+            mouse: [scaled_mouse[0], scaled_mouse[1], 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -200,7 +273,27 @@ impl WgpuRuntime {
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("aura-shader-pass"),
+                label: Some("aura-shader-scene-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.internal_target.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.scene_pipeline);
+            pass.set_bind_group(0, &self.scene_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("aura-shader-composite-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -213,8 +306,8 @@ impl WgpuRuntime {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_pipeline(&self.composite_pipeline);
+            pass.set_bind_group(0, &self.internal_target.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -222,13 +315,34 @@ impl WgpuRuntime {
         output.present();
         Ok(())
     }
+
+    fn recreate_internal_target(&mut self) {
+        let output_size = PhysicalSize::new(self.config.width, self.config.height);
+        let internal_size = compute_internal_render_size(output_size, self.resolution_percent);
+        self.internal_target = create_internal_target(
+            &self.device,
+            internal_size,
+            self.config.format,
+            &self.composite_bind_group_layout,
+            &self.composite_sampler,
+        );
+        tracing::info!(
+            output_width = output_size.width,
+            output_height = output_size.height,
+            internal_width = internal_size.width,
+            internal_height = internal_size.height,
+            resolution_percent = self.resolution_percent,
+            "shader runtime internal render target resized"
+        );
+    }
 }
 
-fn create_pipeline(
+fn create_scene_pipeline(
     device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+    target_format: wgpu::TextureFormat,
     shader_bytes: &[u8],
     mouse_enabled: bool,
+    initial_resolution: PhysicalSize<u32>,
 ) -> Result<(wgpu::Buffer, wgpu::BindGroup, wgpu::RenderPipeline)> {
     let shader_words = load_spirv_words(shader_bytes)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -241,7 +355,12 @@ fn create_pipeline(
         frame_index: 0,
         mouse_enabled: u32::from(mouse_enabled),
         _padding: 0,
-        resolution: [config.width as f32, config.height as f32, 0.0, 0.0],
+        resolution: [
+            initial_resolution.width as f32,
+            initial_resolution.height as f32,
+            0.0,
+            0.0,
+        ],
         mouse: [0.0, 0.0, 0.0, 0.0],
     };
 
@@ -279,7 +398,7 @@ fn create_pipeline(
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("aura-shader-pipeline"),
+        label: Some("aura-shader-scene-pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -291,7 +410,7 @@ fn create_pipeline(
             module: &shader,
             entry_point: "fs_main",
             targets: &[Some(wgpu::ColorTargetState {
-                format: config.format,
+                format: target_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -312,6 +431,163 @@ fn create_pipeline(
     });
 
     Ok((uniform_buffer, bind_group, pipeline))
+}
+
+fn create_composite_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("aura-composite-bind-group-layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_composite_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("aura-composite-sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    })
+}
+
+fn create_composite_pipeline(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("aura-composite-shader"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPOSITE_SHADER_SOURCE)),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("aura-composite-pipeline-layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("aura-composite-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
+}
+
+fn create_internal_target(
+    device: &wgpu::Device,
+    size: PhysicalSize<u32>,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+) -> InternalTarget {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("aura-shader-internal-target"),
+        size: wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("aura-composite-bind-group"),
+        layout: bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    InternalTarget {
+        _texture: texture,
+        view,
+        bind_group,
+        size,
+    }
+}
+
+fn compute_internal_render_size(
+    output_size: PhysicalSize<u32>,
+    resolution_percent: u8,
+) -> PhysicalSize<u32> {
+    PhysicalSize::new(
+        scale_dimension(output_size.width, resolution_percent),
+        scale_dimension(output_size.height, resolution_percent),
+    )
+}
+
+fn scale_dimension(dimension: u32, resolution_percent: u8) -> u32 {
+    let scaled = (u64::from(dimension) * u64::from(resolution_percent)) / 100;
+    scaled.max(1) as u32
+}
+
+fn scale_mouse_to_internal(
+    mouse: [f32; 2],
+    output_size: PhysicalSize<u32>,
+    internal_size: PhysicalSize<u32>,
+) -> [f32; 2] {
+    if output_size.width == 0 || output_size.height == 0 {
+        return mouse;
+    }
+    let x_scale = internal_size.width as f32 / output_size.width as f32;
+    let y_scale = internal_size.height as f32 / output_size.height as f32;
+    [mouse[0] * x_scale, mouse[1] * y_scale]
 }
 
 fn pick_surface_format(
@@ -384,6 +660,35 @@ mod tests {
     fn converts_bytes_to_megabytes() {
         let mb = bytes_to_megabytes(83_886_080);
         assert!((mb - 80.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn computes_internal_render_size_from_percentage() {
+        let output = PhysicalSize::new(1920, 1080);
+        let scaled = compute_internal_render_size(output, 50);
+        assert_eq!(scaled, PhysicalSize::new(960, 540));
+    }
+
+    #[test]
+    fn keeps_full_size_at_hundred_percent() {
+        let output = PhysicalSize::new(1920, 1080);
+        let scaled = compute_internal_render_size(output, 100);
+        assert_eq!(scaled, output);
+    }
+
+    #[test]
+    fn internal_render_size_clamps_to_at_least_one_pixel() {
+        let output = PhysicalSize::new(10, 10);
+        let scaled = compute_internal_render_size(output, 1);
+        assert_eq!(scaled, PhysicalSize::new(1, 1));
+    }
+
+    #[test]
+    fn scales_mouse_coordinates_into_internal_space() {
+        let output = PhysicalSize::new(1920, 1080);
+        let internal = PhysicalSize::new(960, 540);
+        let scaled = scale_mouse_to_internal([960.0, 540.0], output, internal);
+        assert_eq!(scaled, [480.0, 270.0]);
     }
 
     #[test]
