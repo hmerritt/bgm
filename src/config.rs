@@ -276,34 +276,32 @@ image = {{
 	# Image sources. Multiple sources will be combined together to pick the next wallpaper from.
 	# Supported source types: "file" | "directory" | "rss"
 	sources = [
-        {{ type = "directory", path = "{}", recursive = true, extensions = ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }}
+        # RSS feed of ambient-tv images (~120 high-quality images)
+        # {{ type = "rss", url = "https://mrrtt.me/atv" }}
+
+        # Your own directory of images
+        {{ type = "directory", path = "{}" }}
     ]
-    # Duration for switching to a new wallpaper: "40s" | "12m" | "3h"
-    timer = "3h"
-	# Duration for checking remote sources for new images: "40s" | "12m" | "3h"
-	remoteUpdateTimer = "2h"
-	# Target image format for wallpapers. All source images will be converted to this format before being set as wallpaper: "jpg" | "png"
-	format = "jpg"
-	# Quality for JPEG output (ignored for other formats): 1-100
-	jpeg_quality = 90
+    timer = "3h"                     # "40s" | "12m" | "3h"
+	remoteUpdateTimer = "2h"         # "40s" | "12m" | "3h"
+	format = "jpg"                   # "jpg" | "png"
+	jpeg_quality = 90                # 1-100
 }}
 
 # Shader mode options (used when renderer = "shader")
 shader = {{
-	name = "gradient_glossy" # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2" | "dither_warp" | "silk"
-	target_fps = 50
-	resolution = 100 # 1-100 (% internal shader render resolution; output stays full-screen)
-	mouse_enabled = false
-	desktop_scope = "virtual" # "virtual" | "primary"
-	color_space = "unorm" # "unorm" | "srgb"
+	name = "gradient_glossy"         # "gradient_glossy" | "limestone_cave" | "dither_asci_1" | "dither_asci_2" | "dither_warp" | "silk"
+	target_fps = 50                  # 1-999
+	resolution = 100                 # 1-100 (% internal shader render resolution; output stays full-screen)
+	mouse_enabled = false            # false | true
+	desktop_scope = "virtual"        # "virtual" | "primary"
+	color_space = "unorm"            # "unorm" | "srgb"
 }}
 
-# App update settings (Windows + Squirrel install only)
+# App update settings
 updater = {{
     enabled = true
-    # Duration between background update checks
     checkInterval = "6h"
-    # Base URL containing RELEASES and .nupkg artifacts
     feedUrl = "https://github.com/hmerritt/aura/releases/latest/download"
 }}
 "#,
@@ -969,7 +967,7 @@ fn validate_source(source: RawSourceConfig, config_parent: &Path) -> Result<Sour
             let download_dir = download_dir.map(|p| resolve_path(p, config_parent));
             Ok(SourceConfig::Rss {
                 url,
-                max_items: max_items.unwrap_or(200),
+                max_items: max_items.unwrap_or(1000),
                 download_dir,
             })
         }
