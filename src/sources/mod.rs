@@ -26,11 +26,99 @@ pub enum SourceKind {
 }
 
 #[derive(Debug, Clone)]
+pub enum ImageLocation {
+    Local(PathBuf),
+    Rss {
+        image_url: String,
+        download_dir: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct ImageCandidate {
     pub id: String,
     pub origin: Origin,
-    pub local_path: PathBuf,
+    pub location: ImageLocation,
     pub mtime: Option<SystemTime>,
+    sort_key: String,
+}
+
+impl ImageCandidate {
+    pub fn local(id: String, origin: Origin, path: PathBuf, mtime: Option<SystemTime>) -> Self {
+        let sort_key = path.to_string_lossy().into_owned();
+        Self {
+            id,
+            origin,
+            location: ImageLocation::Local(path),
+            mtime,
+            sort_key,
+        }
+    }
+
+    pub fn rss(
+        id: String,
+        image_url: String,
+        download_dir: PathBuf,
+        mtime: Option<SystemTime>,
+    ) -> Self {
+        Self {
+            id,
+            origin: Origin::Rss,
+            location: ImageLocation::Rss {
+                image_url: image_url.clone(),
+                download_dir,
+            },
+            mtime,
+            sort_key: image_url,
+        }
+    }
+
+    pub fn sort_key(&self) -> &str {
+        &self.sort_key
+    }
+
+    pub fn display_source(&self) -> String {
+        match &self.location {
+            ImageLocation::Local(path) => path.display().to_string(),
+            ImageLocation::Rss { image_url, .. } => image_url.clone(),
+        }
+    }
+
+    pub fn is_prefetchable(&self) -> bool {
+        matches!(self.location, ImageLocation::Rss { .. })
+    }
+
+    #[cfg(test)]
+    pub fn cached_local_path(&self) -> Result<Option<PathBuf>> {
+        match &self.location {
+            ImageLocation::Local(path) => Ok(Some(path.clone())),
+            ImageLocation::Rss {
+                image_url,
+                download_dir,
+            } => rss::find_cached_image_path(download_dir, image_url),
+        }
+    }
+
+    pub async fn resolve_local_path(&self) -> Result<Option<PathBuf>> {
+        match &self.location {
+            ImageLocation::Local(path) => Ok(Some(path.clone())),
+            ImageLocation::Rss {
+                image_url,
+                download_dir,
+            } => rss::resolve_image_path(download_dir, image_url).await,
+        }
+    }
+
+    pub async fn prefetch(&self) -> Result<()> {
+        if let ImageLocation::Rss {
+            image_url,
+            download_dir,
+        } = &self.location
+        {
+            let _ = rss::resolve_image_path(download_dir, image_url).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]

@@ -93,8 +93,20 @@ impl RotationManager {
         self.pool.get(&id).cloned()
     }
 
+    pub fn peek_next(&mut self) -> Option<ImageCandidate> {
+        if self.remaining.is_empty() {
+            self.refill_cycle();
+        }
+        let id = self.remaining.front()?;
+        self.pool.get(id).cloned()
+    }
+
     pub fn pool_size(&self) -> usize {
         self.pool.len()
+    }
+
+    pub fn candidates(&self) -> Vec<ImageCandidate> {
+        self.pool.values().cloned().collect()
     }
 
     fn refill_cycle(&mut self) {
@@ -125,12 +137,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn candidate(id: &str) -> ImageCandidate {
-        ImageCandidate {
-            id: id.to_string(),
-            origin: Origin::Directory,
-            local_path: PathBuf::from(format!("{id}.jpg")),
-            mtime: None,
-        }
+        ImageCandidate::local(
+            id.to_string(),
+            Origin::Directory,
+            PathBuf::from(format!("{id}.jpg")),
+            None,
+        )
     }
 
     #[test]

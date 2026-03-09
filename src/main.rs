@@ -403,7 +403,9 @@ async fn run(args: Vec<String>, debug_requested: bool) -> Result<()> {
                                 local_images_count = next_local_count;
                                 session_stats
                                     .set_total_images(local_images_count + remote_images_count);
-                                rotation.rebuild_pool(updated);
+                                let merged =
+                                    merge_with_existing_remote_candidates(&rotation, updated);
+                                rotation.rebuild_pool(merged);
                                 info!(pool_size = rotation.pool_size(), "local refresh complete before tray switch");
                             }
                             Err(error) => warn!(error = %error, "local refresh failed before tray switch"),
@@ -619,7 +621,9 @@ async fn run(args: Vec<String>, debug_requested: bool) -> Result<()> {
                                 local_images_count = next_local_count;
                                 session_stats
                                     .set_total_images(local_images_count + remote_images_count);
-                                rotation.rebuild_pool(updated);
+                                let merged =
+                                    merge_with_existing_remote_candidates(&rotation, updated);
+                                rotation.rebuild_pool(merged);
                                 info!(pool_size = rotation.pool_size(), "local refresh complete before timer switch");
                             }
                             Err(error) => warn!(error = %error, "local refresh failed before timer switch"),
@@ -870,7 +874,7 @@ where
             .unwrap_or(0);
         b_key
             .cmp(&a_key)
-            .then_with(|| a.local_path.cmp(&b.local_path))
+            .then_with(|| a.sort_key().cmp(b.sort_key()))
     });
 
     info!(scope = scope, count = candidates.len(), "merged candidates");
@@ -887,31 +891,83 @@ async fn try_switch_once(
         return Ok(None);
     }
 
-    let candidate = match rotation.next() {
-        Some(candidate) => candidate,
-        None => return Ok(None),
+    for _ in 0..rotation.pool_size() {
+        let candidate = match rotation.next() {
+            Some(candidate) => candidate,
+            None => return Ok(None),
+        };
+        let source_input = candidate.display_source();
+
+        let resolved = match candidate.resolve_local_path().await {
+            Ok(Some(path)) => path,
+            Ok(None) if matches!(candidate.origin, Origin::Rss) => {
+                warn!(id = %candidate.id, input = %source_input, "skipping RSS image with no downloadable content");
+                continue;
+            }
+            Ok(None) => {
+                warn!(id = %candidate.id, input = %source_input, "skipping image candidate with no local path");
+                continue;
+            }
+            Err(error) if matches!(candidate.origin, Origin::Rss) => {
+                warn!(
+                    id = %candidate.id,
+                    input = %source_input,
+                    error = %error,
+                    "failed to resolve RSS image, skipping candidate"
+                );
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to resolve {}", source_input));
+            }
+        };
+
+        let processed = image_pipeline::prepare_for_output(
+            &resolved,
+            cache,
+            config.image.format,
+            config.image.jpeg_quality,
+        )
+        .with_context(|| format!("failed to process {}", resolved.display()))?;
+
+        backend
+            .set_wallpaper(&processed)
+            .with_context(|| format!("failed to set wallpaper {}", processed.display()))?;
+
+        prefetch_next_candidate(rotation);
+
+        info!(
+            id = %candidate.id,
+            source = %origin_name(candidate.origin),
+            input = %source_input,
+            resolved = %resolved.display(),
+            output = %processed.display(),
+            "wallpaper updated"
+        );
+        return Ok(Some(candidate.id));
+    }
+
+    Ok(None)
+}
+
+fn prefetch_next_candidate(rotation: &mut RotationManager) {
+    let Some(next_candidate) = rotation.peek_next() else {
+        return;
     };
+    if !next_candidate.is_prefetchable() {
+        return;
+    }
 
-    let processed = image_pipeline::prepare_for_output(
-        &candidate.local_path,
-        cache,
-        config.image.format,
-        config.image.jpeg_quality,
-    )
-    .with_context(|| format!("failed to process {}", candidate.local_path.display()))?;
-
-    backend
-        .set_wallpaper(&processed)
-        .with_context(|| format!("failed to set wallpaper {}", processed.display()))?;
-
-    info!(
-        id = %candidate.id,
-        source = %origin_name(candidate.origin),
-        input = %candidate.local_path.display(),
-        output = %processed.display(),
-        "wallpaper updated"
-    );
-    Ok(Some(candidate.id))
+    tokio::spawn(async move {
+        let source_input = next_candidate.display_source();
+        if let Err(error) = next_candidate.prefetch().await {
+            warn!(
+                input = %source_input,
+                error = %error,
+                "failed to prefetch RSS image"
+            );
+        }
+    });
 }
 
 fn origin_name(origin: Origin) -> &'static str {
@@ -934,6 +990,22 @@ fn count_images_by_origin(candidates: &[ImageCandidate]) -> (u64, u64) {
     }
 
     (local_images_count, remote_images_count)
+}
+
+fn merge_with_existing_remote_candidates(
+    rotation: &RotationManager,
+    mut local_candidates: Vec<ImageCandidate>,
+) -> Vec<ImageCandidate> {
+    let mut seen: HashSet<String> = local_candidates
+        .iter()
+        .map(|candidate| candidate.id.clone())
+        .collect();
+    for candidate in rotation.candidates() {
+        if matches!(candidate.origin, Origin::Rss) && seen.insert(candidate.id.clone()) {
+            local_candidates.push(candidate);
+        }
+    }
+    local_candidates
 }
 
 fn persist_state(
@@ -1063,6 +1135,16 @@ fn ensure_config_exists_with_pictures(config_path: &Path, pictures_dir: &Path) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheManager;
+    use crate::config::{AuraConfig, ImageConfig, OutputFormat, RendererMode, UpdaterConfig};
+    use crate::sources::rss::test_support::{ResponseSpec, TestServer};
+    use crate::wallpaper::WallpaperBackend;
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use std::fs;
+    use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -1173,5 +1255,161 @@ mod tests {
             "--squirrel-updated".to_string(),
         ]);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn try_switch_once_downloads_current_rss_and_prefetches_next() {
+        let server = TestServer::start();
+        server.set_response(
+            "/current.png",
+            ResponseSpec::ok("image/png", tiny_png_bytes()),
+        );
+        server.set_response("/next.png", ResponseSpec::ok("image/png", tiny_png_bytes()));
+
+        let tmp = tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let cache = CacheManager::new(&config).unwrap();
+        let download_dir = tmp.path().join("rss");
+        let current = ImageCandidate::rss(
+            "current".to_string(),
+            server.url("/current.png"),
+            download_dir.clone(),
+            None,
+        );
+        let next = ImageCandidate::rss(
+            "next".to_string(),
+            server.url("/next.png"),
+            download_dir,
+            None,
+        );
+
+        let mut rotation = RotationManager::new();
+        rotation.rebuild_pool(vec![current, next]);
+        rotation.restore_state(&PersistedState {
+            remaining_queue: vec!["current".to_string(), "next".to_string()],
+            shown_ids: Vec::new(),
+            last_image_id: None,
+        });
+
+        let backend = RecordingBackend::default();
+        let selected = try_switch_once(&mut rotation, &cache, &backend, &config)
+            .await
+            .unwrap();
+
+        assert_eq!(selected, Some("current".to_string()));
+        assert_eq!(backend.calls(), 1);
+        assert_eq!(server.hits("/current.png"), 1);
+
+        for _ in 0..20 {
+            if server.hits("/next.png") > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(server.hits("/next.png"), 1);
+    }
+
+    #[tokio::test]
+    async fn try_switch_once_skips_failed_rss_candidate_and_uses_next() {
+        let server = TestServer::start();
+        server.set_response("/good.png", ResponseSpec::ok("image/png", tiny_png_bytes()));
+
+        let tmp = tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let cache = CacheManager::new(&config).unwrap();
+        let download_dir = tmp.path().join("rss");
+        let fallback_local = tmp.path().join("fallback.png");
+        fs::write(&fallback_local, tiny_png_bytes()).unwrap();
+
+        let failed = ImageCandidate::rss(
+            "failed".to_string(),
+            server.url("/missing.png"),
+            download_dir.clone(),
+            None,
+        );
+        let good = ImageCandidate::rss(
+            "good".to_string(),
+            server.url("/good.png"),
+            download_dir,
+            None,
+        );
+        let local =
+            ImageCandidate::local("local".to_string(), Origin::Directory, fallback_local, None);
+
+        let mut rotation = RotationManager::new();
+        rotation.rebuild_pool(vec![failed, good, local]);
+        rotation.restore_state(&PersistedState {
+            remaining_queue: vec![
+                "failed".to_string(),
+                "good".to_string(),
+                "local".to_string(),
+            ],
+            shown_ids: Vec::new(),
+            last_image_id: None,
+        });
+
+        let backend = RecordingBackend::default();
+        let selected = try_switch_once(&mut rotation, &cache, &backend, &config)
+            .await
+            .unwrap();
+
+        assert_eq!(selected, Some("good".to_string()));
+        assert_eq!(backend.calls(), 1);
+        assert_eq!(server.hits("/missing.png"), 1);
+        assert_eq!(server.hits("/good.png"), 1);
+    }
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        calls: Mutex<Vec<PathBuf>>,
+    }
+
+    impl RecordingBackend {
+        fn calls(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl WallpaperBackend for RecordingBackend {
+        fn set_wallpaper(&self, path: &Path) -> Result<()> {
+            assert!(path.exists());
+            self.calls.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        }
+    }
+
+    fn test_config(base: &Path) -> AuraConfig {
+        AuraConfig {
+            image: ImageConfig {
+                timer: Duration::from_secs(300),
+                remote_update_timer: Duration::from_secs(3600),
+                sources: Vec::new(),
+                format: OutputFormat::Png,
+                jpeg_quality: 90,
+            },
+            updater: UpdaterConfig {
+                enabled: false,
+                check_interval: Duration::from_secs(6 * 3600),
+                feed_url: "https://github.com/hmerritt/aura/releases/latest/download".to_string(),
+            },
+            cache_dir: base.join("cache"),
+            state_file: base.join("state.json"),
+            log_level: "info".to_string(),
+            max_cache_bytes: 1024 * 1024,
+            max_cache_age: Duration::from_secs(24 * 60 * 60),
+            renderer: RendererMode::Image,
+            shader: None,
+        }
+    }
+
+    fn tiny_png_bytes() -> Vec<u8> {
+        let image: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
+        let mut out = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut out, ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
     }
 }

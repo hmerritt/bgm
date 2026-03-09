@@ -33,11 +33,11 @@ impl ImageSource for SingleSource {
         }
         let metadata = fs::metadata(&self.path)?;
         let mtime = metadata.modified().ok();
-        Ok(vec![ImageCandidate {
-            id: image_id("file", &self.path),
-            origin: Origin::File,
-            local_path: self.path.clone(),
+        Ok(vec![ImageCandidate::local(
+            image_id("file", &self.path),
+            Origin::File,
+            self.path.clone(),
             mtime,
-        }])
+        )])
     }
 }

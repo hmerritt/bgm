@@ -69,12 +69,12 @@ impl ImageSource for DirectorySource {
                     continue;
                 }
                 let metadata = fs::metadata(path)?;
-                candidates.push(ImageCandidate {
-                    id: image_id("directory", path),
-                    origin: Origin::Directory,
-                    local_path: path.to_path_buf(),
-                    mtime: metadata.modified().ok(),
-                });
+                candidates.push(ImageCandidate::local(
+                    image_id("directory", path),
+                    Origin::Directory,
+                    path.to_path_buf(),
+                    metadata.modified().ok(),
+                ));
             }
         } else {
             for entry in fs::read_dir(&self.path)? {
@@ -84,12 +84,12 @@ impl ImageSource for DirectorySource {
                     continue;
                 }
                 let metadata = fs::metadata(&path)?;
-                candidates.push(ImageCandidate {
-                    id: image_id("directory", &path),
-                    origin: Origin::Directory,
-                    local_path: path,
-                    mtime: metadata.modified().ok(),
-                });
+                candidates.push(ImageCandidate::local(
+                    image_id("directory", &path),
+                    Origin::Directory,
+                    path,
+                    metadata.modified().ok(),
+                ));
             }
         }
 
