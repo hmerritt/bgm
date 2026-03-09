@@ -252,7 +252,8 @@ pub fn load_from_path_with_warnings(path: &Path) -> Result<ConfigWithWarnings> {
     parse_from_str_with_warnings(&content, path)
 }
 
-pub fn parse_from_str(content: &str, path: &Path) -> Result<AuraConfig> {
+#[cfg(test)]
+pub(crate) fn parse_from_str(content: &str, path: &Path) -> Result<AuraConfig> {
     Ok(parse_from_str_with_warnings(content, path)?.config)
 }
 
